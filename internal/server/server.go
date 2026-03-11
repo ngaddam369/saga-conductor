@@ -140,6 +140,18 @@ func (s *Server) StartSaga(ctx context.Context, req *pb.StartSagaRequest) (*pb.S
 		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, status.Error(codes.DeadlineExceeded, "saga start timed out")
 		}
+		if errors.Is(err, store.ErrAlreadyRunning) {
+			return nil, status.Error(codes.FailedPrecondition, "saga is already running")
+		}
+		if errors.Is(err, store.ErrAlreadyCompensating) {
+			return nil, status.Error(codes.FailedPrecondition, "saga is already compensating")
+		}
+		if errors.Is(err, store.ErrAlreadyCompleted) {
+			return nil, status.Error(codes.FailedPrecondition, "saga is already completed")
+		}
+		if errors.Is(err, store.ErrAlreadyFailed) {
+			return nil, status.Error(codes.FailedPrecondition, "saga has already failed")
+		}
 		return nil, status.Errorf(codes.Internal, "start saga: %v", err)
 	}
 

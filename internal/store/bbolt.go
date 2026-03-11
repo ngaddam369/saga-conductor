@@ -22,6 +22,19 @@ var (
 
 	// ErrAlreadyExists is returned when Create is called with a duplicate ID.
 	ErrAlreadyExists = errors.New("saga already exists")
+
+	// ErrAlreadyRunning is returned by TransitionToRunning when the saga is
+	// already RUNNING (concurrent Start calls).
+	ErrAlreadyRunning = errors.New("saga is already running")
+
+	// ErrAlreadyCompensating is returned when the saga is mid-rollback.
+	ErrAlreadyCompensating = errors.New("saga is already compensating")
+
+	// ErrAlreadyCompleted is returned when the saga has already completed successfully.
+	ErrAlreadyCompleted = errors.New("saga is already completed")
+
+	// ErrAlreadyFailed is returned when the saga has already reached a failed terminal state.
+	ErrAlreadyFailed = errors.New("saga has already failed")
 )
 
 // BoltStore is a bbolt-backed implementation of Store.
@@ -111,6 +124,48 @@ func (s *BoltStore) Update(_ context.Context, exec *saga.Execution) error {
 		}
 		return b.Put(key, data)
 	})
+}
+
+func (s *BoltStore) TransitionToRunning(ctx context.Context, id string, startedAt time.Time) (*saga.Execution, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var exec saga.Execution
+	err := s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bucketSagas)
+		data := b.Get([]byte(id))
+		if data == nil {
+			return ErrNotFound
+		}
+		if err := json.Unmarshal(data, &exec); err != nil {
+			return fmt.Errorf("unmarshal saga: %w", err)
+		}
+		switch exec.Status {
+		case saga.SagaStatusPending:
+			// allowed — fall through to write
+		case saga.SagaStatusRunning:
+			return ErrAlreadyRunning
+		case saga.SagaStatusCompensating:
+			return ErrAlreadyCompensating
+		case saga.SagaStatusCompleted:
+			return ErrAlreadyCompleted
+		case saga.SagaStatusFailed:
+			return ErrAlreadyFailed
+		default:
+			return fmt.Errorf("saga is in unexpected status %q", exec.Status)
+		}
+		exec.Status = saga.SagaStatusRunning
+		exec.StartedAt = &startedAt
+		updated, err := json.Marshal(&exec)
+		if err != nil {
+			return fmt.Errorf("marshal saga: %w", err)
+		}
+		return b.Put([]byte(id), updated)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &exec, nil
 }
 
 func (s *BoltStore) List(ctx context.Context, status saga.SagaStatus) ([]*saga.Execution, error) {

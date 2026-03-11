@@ -64,22 +64,12 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 		return nil, fmt.Errorf("context already done: %w", err)
 	}
 
-	exec, err := e.store.Get(ctx, id)
+	exec, err := e.store.TransitionToRunning(ctx, id, time.Now().UTC())
 	if err != nil {
-		return nil, fmt.Errorf("get saga: %w", err)
-	}
-	if exec.Status != saga.SagaStatusPending {
-		return nil, fmt.Errorf("saga %s is %s, want PENDING", id, exec.Status)
+		return nil, fmt.Errorf("transition to RUNNING: %w", err)
 	}
 	if len(exec.Steps) != len(exec.StepDefs) {
 		return nil, fmt.Errorf("saga %s: corrupted — Steps length %d != StepDefs length %d", id, len(exec.Steps), len(exec.StepDefs))
-	}
-
-	now := time.Now().UTC()
-	exec.Status = saga.SagaStatusRunning
-	exec.StartedAt = &now
-	if err = e.store.Update(ctx, exec); err != nil {
-		return nil, fmt.Errorf("persist RUNNING: %w", err)
 	}
 
 	failedIdx := -1
@@ -117,9 +107,9 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 	}
 
 	if failedIdx == -1 {
-		now = time.Now().UTC()
+		completed := time.Now().UTC()
 		exec.Status = saga.SagaStatusCompleted
-		exec.CompletedAt = &now
+		exec.CompletedAt = &completed
 		if err = e.store.Update(ctx, exec); err != nil {
 			return nil, fmt.Errorf("persist COMPLETED: %w", err)
 		}
@@ -161,9 +151,9 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 		}
 	}
 
-	now = time.Now().UTC()
+	failed := time.Now().UTC()
 	exec.Status = saga.SagaStatusFailed
-	exec.CompletedAt = &now
+	exec.CompletedAt = &failed
 	if err = e.store.Update(ctx, exec); err != nil {
 		return nil, fmt.Errorf("persist FAILED: %w", err)
 	}

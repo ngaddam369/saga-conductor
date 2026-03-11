@@ -3,6 +3,7 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"github.com/ngaddam369/saga-conductor/internal/saga"
 )
@@ -24,4 +25,9 @@ type Store interface {
 	// List returns all stored saga executions. When status is non-empty only
 	// sagas whose status matches are returned.
 	List(ctx context.Context, status saga.SagaStatus) ([]*saga.Execution, error)
+
+	// TransitionToRunning atomically checks that the saga is PENDING and, if so,
+	// writes it to RUNNING and returns the updated execution. It returns
+	// ErrAlreadyRunning if the saga is not PENDING when the write fires.
+	TransitionToRunning(ctx context.Context, id string, startedAt time.Time) (*saga.Execution, error)
 }

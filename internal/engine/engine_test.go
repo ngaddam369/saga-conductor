@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -175,12 +176,13 @@ func TestEngine(t *testing.T) {
 
 	t.Run("StartNonPendingSaga", func(t *testing.T) {
 		tests := []struct {
-			status saga.SagaStatus
+			status  saga.SagaStatus
+			wantErr error
 		}{
-			{saga.SagaStatusRunning},
-			{saga.SagaStatusCompleted},
-			{saga.SagaStatusFailed},
-			{saga.SagaStatusCompensating},
+			{saga.SagaStatusRunning, store.ErrAlreadyRunning},
+			{saga.SagaStatusCompensating, store.ErrAlreadyCompensating},
+			{saga.SagaStatusCompleted, store.ErrAlreadyCompleted},
+			{saga.SagaStatusFailed, store.ErrAlreadyFailed},
 		}
 		for _, tc := range tests {
 			t.Run(string(tc.status), func(t *testing.T) {
@@ -196,8 +198,9 @@ func TestEngine(t *testing.T) {
 				if err := s.Create(context.Background(), exec); err != nil {
 					t.Fatalf("Create: %v", err)
 				}
-				if _, err := eng.Start(context.Background(), "saga-1"); err == nil {
-					t.Errorf("expected error starting saga in status %q, got nil", tc.status)
+				_, err := eng.Start(context.Background(), "saga-1")
+				if !errors.Is(err, tc.wantErr) {
+					t.Errorf("err: got %v, want %v", err, tc.wantErr)
 				}
 			})
 		}
@@ -328,6 +331,57 @@ func TestEngine(t *testing.T) {
 		_, err := eng.Start(context.Background(), "saga-1")
 		if err == nil {
 			t.Fatal("expected error for Steps/StepDefs length mismatch, got nil")
+		}
+	})
+
+	t.Run("ConcurrentStart", func(t *testing.T) {
+		// Two goroutines race to start the same PENDING saga.
+		// Exactly one must succeed; the other must get ErrAlreadyRunning.
+		srv, _ := stepServer(t, http.StatusOK)
+		eng, s := newEngine(t)
+		ctx := context.Background()
+
+		exec := &saga.Execution{
+			ID:        "concurrent-saga",
+			Name:      "concurrent",
+			Status:    saga.SagaStatusPending,
+			CreatedAt: time.Now().UTC(),
+			StepDefs:  []saga.StepDefinition{{Name: "s1", ForwardURL: srv.URL, CompensateURL: srv.URL}},
+			Steps:     []saga.StepExecution{{Name: "s1", Status: saga.StepStatusPending}},
+		}
+		if err := s.Create(ctx, exec); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+
+		var (
+			wg             sync.WaitGroup
+			mu             sync.Mutex
+			successes      int
+			alreadyRunning int
+		)
+		for range 2 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				_, err := eng.Start(ctx, "concurrent-saga")
+				mu.Lock()
+				defer mu.Unlock()
+				if err == nil {
+					successes++
+				} else if errors.Is(err, store.ErrAlreadyRunning) {
+					alreadyRunning++
+				} else {
+					t.Errorf("unexpected error: %v", err)
+				}
+			}()
+		}
+		wg.Wait()
+
+		if successes != 1 {
+			t.Errorf("successes: got %d, want 1", successes)
+		}
+		if alreadyRunning != 1 {
+			t.Errorf("alreadyRunning errors: got %d, want 1", alreadyRunning)
 		}
 	})
 

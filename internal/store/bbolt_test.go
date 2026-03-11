@@ -215,6 +215,56 @@ func TestBoltStore(t *testing.T) {
 		}
 	})
 
+	t.Run("TransitionToRunning", func(t *testing.T) {
+		tests := []struct {
+			name        string
+			setupStatus saga.SagaStatus
+			wantErr     error
+		}{
+			{"pending transitions to running", saga.SagaStatusPending, nil},
+			{"running returns ErrAlreadyRunning", saga.SagaStatusRunning, store.ErrAlreadyRunning},
+			{"compensating returns ErrAlreadyCompensating", saga.SagaStatusCompensating, store.ErrAlreadyCompensating},
+			{"completed returns ErrAlreadyCompleted", saga.SagaStatusCompleted, store.ErrAlreadyCompleted},
+			{"failed returns ErrAlreadyFailed", saga.SagaStatusFailed, store.ErrAlreadyFailed},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				s := newTestStore(t)
+				ctx := context.Background()
+
+				exec := newExec("tr-1", "saga", tc.setupStatus)
+				if err := s.Create(ctx, exec); err != nil {
+					t.Fatalf("Create: %v", err)
+				}
+
+				got, err := s.TransitionToRunning(ctx, "tr-1", time.Now().UTC())
+				if tc.wantErr != nil {
+					if err != tc.wantErr {
+						t.Errorf("err: got %v, want %v", err, tc.wantErr)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("TransitionToRunning: %v", err)
+				}
+				if got.Status != saga.SagaStatusRunning {
+					t.Errorf("status: got %q, want RUNNING", got.Status)
+				}
+				if got.StartedAt == nil {
+					t.Error("StartedAt is nil after transition")
+				}
+			})
+		}
+	})
+
+	t.Run("TransitionToRunning_NotFound", func(t *testing.T) {
+		s := newTestStore(t)
+		_, err := s.TransitionToRunning(context.Background(), "nonexistent", time.Now().UTC())
+		if err != store.ErrNotFound {
+			t.Errorf("want ErrNotFound, got %v", err)
+		}
+	})
+
 	t.Run("ListCanceledContext", func(t *testing.T) {
 		s := newTestStore(t)
 		ctx := context.Background()

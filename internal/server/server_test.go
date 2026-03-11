@@ -422,6 +422,30 @@ func TestServer(t *testing.T) {
 				engine:   &mockEngine{err: fmt.Errorf("some internal failure")},
 				wantCode: codes.Internal,
 			},
+			{
+				name:     "ErrAlreadyRunning → codes.FailedPrecondition",
+				sagaID:   "saga-1",
+				engine:   &mockEngine{err: fmt.Errorf("transition: %w", store.ErrAlreadyRunning)},
+				wantCode: codes.FailedPrecondition,
+			},
+			{
+				name:     "ErrAlreadyCompensating → codes.FailedPrecondition",
+				sagaID:   "saga-1",
+				engine:   &mockEngine{err: fmt.Errorf("transition: %w", store.ErrAlreadyCompensating)},
+				wantCode: codes.FailedPrecondition,
+			},
+			{
+				name:     "ErrAlreadyCompleted → codes.FailedPrecondition",
+				sagaID:   "saga-1",
+				engine:   &mockEngine{err: fmt.Errorf("transition: %w", store.ErrAlreadyCompleted)},
+				wantCode: codes.FailedPrecondition,
+			},
+			{
+				name:     "ErrAlreadyFailed → codes.FailedPrecondition",
+				sagaID:   "saga-1",
+				engine:   &mockEngine{err: fmt.Errorf("transition: %w", store.ErrAlreadyFailed)},
+				wantCode: codes.FailedPrecondition,
+			},
 		}
 
 		for _, tc := range tests {

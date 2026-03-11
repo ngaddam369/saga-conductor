@@ -68,8 +68,8 @@ func productionGRPCServer(t *testing.T, cfg config) pb.SagaOrchestratorClient {
 }
 
 // productionHealthServer starts the health HTTP server as production does
-// and returns its base URL.
-func productionHealthServer(t *testing.T) string {
+// (with timeouts) and returns its base URL.
+func productionHealthServer(t *testing.T, cfg config) string {
 	t.Helper()
 
 	mux := http.NewServeMux()
@@ -85,7 +85,12 @@ func productionHealthServer(t *testing.T) string {
 		t.Fatalf("listen: %v", err)
 	}
 
-	srv := &http.Server{Handler: mux}
+	srv := &http.Server{
+		Handler:      mux,
+		ReadTimeout:  time.Duration(cfg.healthReadTimeoutSecs) * time.Second,
+		WriteTimeout: time.Duration(cfg.healthWriteTimeoutSecs) * time.Second,
+		IdleTimeout:  time.Duration(cfg.healthIdleTimeoutSecs) * time.Second,
+	}
 	go func() { _ = srv.Serve(lis) }()
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -104,6 +109,9 @@ func defaultTestConfig() config {
 		grpcKeepaliveTimeMinutes: 2,
 		grpcKeepaliveTimeoutSecs: 20,
 		grpcKeepaliveMinTimeSecs: 30,
+		healthReadTimeoutSecs:    5,
+		healthWriteTimeoutSecs:   5,
+		healthIdleTimeoutSecs:    60,
 	}
 }
 
@@ -228,7 +236,7 @@ func TestIntegration(t *testing.T) {
 			},
 		}
 
-		baseURL := productionHealthServer(t)
+		baseURL := productionHealthServer(t, defaultTestConfig())
 
 		for _, tc := range tests {
 			t.Run(tc.name, func(t *testing.T) {
@@ -246,6 +254,37 @@ func TestIntegration(t *testing.T) {
 					t.Errorf("status: got %d, want %d", resp.StatusCode, tc.wantCode)
 				}
 			})
+		}
+	})
+
+	t.Run("HealthReadTimeout", func(t *testing.T) {
+		// A client that opens a connection and never sends headers must be
+		// dropped by the server's ReadTimeout, not held open indefinitely.
+		cfg := defaultTestConfig()
+		cfg.healthReadTimeoutSecs = 1
+		baseURL := productionHealthServer(t, cfg)
+
+		// Dial raw TCP and send nothing — the server should close the
+		// connection once ReadTimeout fires.
+		addr := baseURL[len("http://"):]
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatalf("dial: %v", err)
+		}
+		defer func() {
+			if closeErr := conn.Close(); closeErr != nil {
+				t.Errorf("close conn: %v", closeErr)
+			}
+		}()
+
+		if err := conn.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+			t.Fatalf("SetDeadline: %v", err)
+		}
+
+		buf := make([]byte, 1)
+		_, err = conn.Read(buf)
+		if err == nil {
+			t.Error("expected connection to be closed by ReadTimeout, got no error")
 		}
 	})
 }

@@ -71,8 +71,11 @@ func run() error {
 		w.WriteHeader(http.StatusOK)
 	})
 	healthSrv := &http.Server{
-		Addr:    cfg.healthAddr,
-		Handler: mux,
+		Addr:         cfg.healthAddr,
+		Handler:      mux,
+		ReadTimeout:  time.Duration(cfg.healthReadTimeoutSecs) * time.Second,
+		WriteTimeout: time.Duration(cfg.healthWriteTimeoutSecs) * time.Second,
+		IdleTimeout:  time.Duration(cfg.healthIdleTimeoutSecs) * time.Second,
 	}
 
 	errCh := make(chan error, 2)

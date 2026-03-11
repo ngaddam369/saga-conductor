@@ -17,6 +17,11 @@ type config struct {
 	grpcKeepaliveTimeMinutes int // Time between server pings
 	grpcKeepaliveTimeoutSecs int // Timeout waiting for ping ack
 	grpcKeepaliveMinTimeSecs int // EnforcementPolicy: minimum client ping interval
+
+	// Health HTTP server timeouts.
+	healthReadTimeoutSecs  int
+	healthWriteTimeoutSecs int
+	healthIdleTimeoutSecs  int
 }
 
 func loadConfig() config {
@@ -31,6 +36,10 @@ func loadConfig() config {
 		grpcKeepaliveTimeMinutes: getEnvInt("GRPC_KEEPALIVE_TIME_MINUTES", 2),
 		grpcKeepaliveTimeoutSecs: getEnvInt("GRPC_KEEPALIVE_TIMEOUT_SECONDS", 20),
 		grpcKeepaliveMinTimeSecs: getEnvInt("GRPC_KEEPALIVE_MIN_TIME_SECONDS", 30),
+
+		healthReadTimeoutSecs:  getEnvInt("HEALTH_READ_TIMEOUT_SECONDS", 5),
+		healthWriteTimeoutSecs: getEnvInt("HEALTH_WRITE_TIMEOUT_SECONDS", 5),
+		healthIdleTimeoutSecs:  getEnvInt("HEALTH_IDLE_TIMEOUT_SECONDS", 60),
 	}
 }
 

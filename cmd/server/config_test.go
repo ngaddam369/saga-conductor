@@ -45,6 +45,9 @@ func TestLoadConfig(t *testing.T) {
 		wantKeepaliveTimeMinutes int
 		wantKeepaliveTimeoutSecs int
 		wantKeepaliveMinTimeSecs int
+		wantHealthReadSecs       int
+		wantHealthWriteSecs      int
+		wantHealthIdleSecs       int
 	}{
 		{
 			name:                     "defaults when no env vars set",
@@ -58,6 +61,9 @@ func TestLoadConfig(t *testing.T) {
 			wantKeepaliveTimeMinutes: 2,
 			wantKeepaliveTimeoutSecs: 20,
 			wantKeepaliveMinTimeSecs: 30,
+			wantHealthReadSecs:       5,
+			wantHealthWriteSecs:      5,
+			wantHealthIdleSecs:       60,
 		},
 		{
 			name: "all env vars overridden",
@@ -71,6 +77,9 @@ func TestLoadConfig(t *testing.T) {
 				"GRPC_KEEPALIVE_TIME_MINUTES":     "3",
 				"GRPC_KEEPALIVE_TIMEOUT_SECONDS":  "30",
 				"GRPC_KEEPALIVE_MIN_TIME_SECONDS": "60",
+				"HEALTH_READ_TIMEOUT_SECONDS":     "10",
+				"HEALTH_WRITE_TIMEOUT_SECONDS":    "10",
+				"HEALTH_IDLE_TIMEOUT_SECONDS":     "120",
 			},
 			wantGRPCAddr:             ":9090",
 			wantHealthAddr:           ":9091",
@@ -81,6 +90,9 @@ func TestLoadConfig(t *testing.T) {
 			wantKeepaliveTimeMinutes: 3,
 			wantKeepaliveTimeoutSecs: 30,
 			wantKeepaliveMinTimeSecs: 60,
+			wantHealthReadSecs:       10,
+			wantHealthWriteSecs:      10,
+			wantHealthIdleSecs:       120,
 		},
 		{
 			name: "invalid GRPC_MAX_RECV_MB falls back to default",
@@ -96,6 +108,9 @@ func TestLoadConfig(t *testing.T) {
 			wantKeepaliveTimeMinutes: 2,
 			wantKeepaliveTimeoutSecs: 20,
 			wantKeepaliveMinTimeSecs: 30,
+			wantHealthReadSecs:       5,
+			wantHealthWriteSecs:      5,
+			wantHealthIdleSecs:       60,
 		},
 		{
 			name: "zero values fall back to defaults",
@@ -105,6 +120,9 @@ func TestLoadConfig(t *testing.T) {
 				"GRPC_KEEPALIVE_TIME_MINUTES":     "0",
 				"GRPC_KEEPALIVE_TIMEOUT_SECONDS":  "0",
 				"GRPC_KEEPALIVE_MIN_TIME_SECONDS": "0",
+				"HEALTH_READ_TIMEOUT_SECONDS":     "0",
+				"HEALTH_WRITE_TIMEOUT_SECONDS":    "0",
+				"HEALTH_IDLE_TIMEOUT_SECONDS":     "0",
 			},
 			wantGRPCAddr:             ":8080",
 			wantHealthAddr:           ":8081",
@@ -115,14 +133,20 @@ func TestLoadConfig(t *testing.T) {
 			wantKeepaliveTimeMinutes: 2,
 			wantKeepaliveTimeoutSecs: 20,
 			wantKeepaliveMinTimeSecs: 30,
+			wantHealthReadSecs:       5,
+			wantHealthWriteSecs:      5,
+			wantHealthIdleSecs:       60,
 		},
 		{
-			name: "invalid keepalive values fall back to defaults",
+			name: "invalid keepalive and health timeout values fall back to defaults",
 			env: map[string]string{
 				"GRPC_MAX_CONN_IDLE_MINUTES":      "abc",
 				"GRPC_KEEPALIVE_TIME_MINUTES":     "-1",
 				"GRPC_KEEPALIVE_TIMEOUT_SECONDS":  "xyz",
 				"GRPC_KEEPALIVE_MIN_TIME_SECONDS": "0",
+				"HEALTH_READ_TIMEOUT_SECONDS":     "bad",
+				"HEALTH_WRITE_TIMEOUT_SECONDS":    "-1",
+				"HEALTH_IDLE_TIMEOUT_SECONDS":     "abc",
 			},
 			wantGRPCAddr:             ":8080",
 			wantHealthAddr:           ":8081",
@@ -133,6 +157,9 @@ func TestLoadConfig(t *testing.T) {
 			wantKeepaliveTimeMinutes: 2,
 			wantKeepaliveTimeoutSecs: 20,
 			wantKeepaliveMinTimeSecs: 30,
+			wantHealthReadSecs:       5,
+			wantHealthWriteSecs:      5,
+			wantHealthIdleSecs:       60,
 		},
 	}
 
@@ -170,6 +197,15 @@ func TestLoadConfig(t *testing.T) {
 			}
 			if cfg.grpcKeepaliveMinTimeSecs != tc.wantKeepaliveMinTimeSecs {
 				t.Errorf("grpcKeepaliveMinTimeSecs: got %d, want %d", cfg.grpcKeepaliveMinTimeSecs, tc.wantKeepaliveMinTimeSecs)
+			}
+			if cfg.healthReadTimeoutSecs != tc.wantHealthReadSecs {
+				t.Errorf("healthReadTimeoutSecs: got %d, want %d", cfg.healthReadTimeoutSecs, tc.wantHealthReadSecs)
+			}
+			if cfg.healthWriteTimeoutSecs != tc.wantHealthWriteSecs {
+				t.Errorf("healthWriteTimeoutSecs: got %d, want %d", cfg.healthWriteTimeoutSecs, tc.wantHealthWriteSecs)
+			}
+			if cfg.healthIdleTimeoutSecs != tc.wantHealthIdleSecs {
+				t.Errorf("healthIdleTimeoutSecs: got %d, want %d", cfg.healthIdleTimeoutSecs, tc.wantHealthIdleSecs)
 			}
 		})
 	}

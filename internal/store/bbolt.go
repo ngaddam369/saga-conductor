@@ -98,11 +98,14 @@ func (s *BoltStore) Update(_ context.Context, exec *saga.Execution) error {
 	})
 }
 
-func (s *BoltStore) List(_ context.Context, status saga.SagaStatus) ([]*saga.Execution, error) {
+func (s *BoltStore) List(ctx context.Context, status saga.SagaStatus) ([]*saga.Execution, error) {
 	var results []*saga.Execution
 
 	err := s.db.View(func(tx *bbolt.Tx) error {
 		return tx.Bucket(bucketSagas).ForEach(func(_, v []byte) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			var exec saga.Execution
 			if err := json.Unmarshal(v, &exec); err != nil {
 				return fmt.Errorf("unmarshal saga: %w", err)

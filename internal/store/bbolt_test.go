@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -149,6 +150,26 @@ func TestBoltStore(t *testing.T) {
 					t.Errorf("List(%q): got %d, want %d", tc.filterStatus, len(got), tc.wantCount)
 				}
 			})
+		}
+	})
+
+	t.Run("ListCanceledContext", func(t *testing.T) {
+		s := newTestStore(t)
+		ctx := context.Background()
+
+		for i := range 3 {
+			e := newExec(fmt.Sprintf("ctx-%d", i), "saga", saga.SagaStatusPending)
+			if err := s.Create(ctx, e); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+		}
+
+		canceled, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		_, err := s.List(canceled, "")
+		if err == nil {
+			t.Fatal("expected error from canceled context, got nil")
 		}
 	})
 

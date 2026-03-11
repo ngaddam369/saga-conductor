@@ -447,6 +447,53 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("PerStepTimeout", func(t *testing.T) {
+		// A saga step with timeout_seconds=1 must abort within ~1s even though
+		// the engine's default STEP_TIMEOUT_SECONDS is much larger.
+		// Disable retries so the test only measures the per-step timeout.
+		t.Setenv("STEP_TIMEOUT_SECONDS", "30")
+		t.Setenv("STEP_MAX_RETRIES", "0")
+
+		done := make(chan struct{})
+		hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			<-done
+		}))
+		t.Cleanup(func() { close(done); hang.Close() })
+
+		client := productionGRPCServer(t, defaultTestConfig())
+
+		created, err := client.CreateSaga(context.Background(), &pb.CreateSagaRequest{
+			Name: "per-step-timeout",
+			Steps: []*pb.StepDefinition{
+				{
+					Name:           "step-1",
+					ForwardUrl:     hang.URL,
+					CompensateUrl:  hang.URL,
+					TimeoutSeconds: 1,
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateSaga: %v", err)
+		}
+
+		start := time.Now()
+		started, err := client.StartSaga(context.Background(), &pb.StartSagaRequest{
+			SagaId: created.Saga.Id,
+		})
+		elapsed := time.Since(start)
+
+		if err != nil {
+			t.Fatalf("StartSaga: %v", err)
+		}
+		if started.Saga.Status != pb.SagaStatus_SAGA_STATUS_FAILED {
+			t.Errorf("status: got %v, want FAILED", started.Saga.Status)
+		}
+		if elapsed > 3*time.Second {
+			t.Errorf("took %v; per-step timeout of 1s should have aborted quickly", elapsed)
+		}
+	})
+
 	t.Run("HealthReadTimeout", func(t *testing.T) {
 		// A client that opens a connection and never sends headers must be
 		// dropped by the server's ReadTimeout, not held open indefinitely.

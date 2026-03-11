@@ -242,10 +242,11 @@ func TestEngine(t *testing.T) {
 		t.Setenv("STEP_TIMEOUT_SECONDS", "1")
 		eng, s := newEngine(t)
 
+		done := make(chan struct{})
 		hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			time.Sleep(5 * time.Second) // longer than the 1s timeout
+			<-done
 		}))
-		t.Cleanup(hang.Close)
+		t.Cleanup(func() { close(done); hang.Close() })
 
 		seedSaga(t, s, []saga.StepDefinition{
 			{Name: "step-1", ForwardURL: hang.URL, CompensateURL: hang.URL},
@@ -576,6 +577,44 @@ func TestEngine(t *testing.T) {
 		}
 		if alreadyRunning != 1 {
 			t.Errorf("alreadyRunning errors: got %d, want 1", alreadyRunning)
+		}
+	})
+
+	t.Run("PerStepTimeout", func(t *testing.T) {
+		// A step with TimeoutSeconds:1 must be aborted in ~1s regardless of
+		// the engine's default timeout (which is much larger).
+		done := make(chan struct{})
+		hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			<-done
+		}))
+		t.Cleanup(func() { close(done); hang.Close() })
+
+		// Build engine with a large default timeout so the per-step override
+		// is the only reason it aborts quickly.
+		s, err := store.NewBoltStore(filepath.Join(t.TempDir(), "per-step-timeout.db"))
+		if err != nil {
+			t.Fatalf("NewBoltStore: %v", err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		t.Setenv("STEP_TIMEOUT_SECONDS", "30")
+		eng := engine.New(s, engine.WithRetryBackoff(time.Millisecond), engine.WithDefaultMaxRetries(0))
+
+		seedSaga(t, s, []saga.StepDefinition{
+			{Name: "step-1", ForwardURL: hang.URL, CompensateURL: hang.URL, TimeoutSeconds: 1},
+		})
+
+		start := time.Now()
+		exec, startErr := eng.Start(context.Background(), "saga-1")
+		elapsed := time.Since(start)
+
+		if startErr != nil {
+			t.Fatalf("Start: %v", startErr)
+		}
+		if exec.Status != saga.SagaStatusFailed {
+			t.Errorf("Status: got %q, want FAILED", exec.Status)
+		}
+		if elapsed > 3*time.Second {
+			t.Errorf("took %v; expected per-step timeout of 1s to abort quickly", elapsed)
 		}
 	})
 

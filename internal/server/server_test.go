@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"path/filepath"
 	"testing"
@@ -341,6 +342,24 @@ func TestServer(t *testing.T) {
 				sagaID:   "saga-1",
 				engine:   &mockEngine{},
 				wantCode: codes.OK,
+			},
+			{
+				name:     "engine returns context.Canceled → codes.Canceled",
+				sagaID:   "saga-1",
+				engine:   &mockEngine{err: fmt.Errorf("engine: %w", context.Canceled)},
+				wantCode: codes.Canceled,
+			},
+			{
+				name:     "engine returns context.DeadlineExceeded → codes.DeadlineExceeded",
+				sagaID:   "saga-1",
+				engine:   &mockEngine{err: fmt.Errorf("engine: %w", context.DeadlineExceeded)},
+				wantCode: codes.DeadlineExceeded,
+			},
+			{
+				name:     "engine returns generic error → codes.Internal",
+				sagaID:   "saga-1",
+				engine:   &mockEngine{err: fmt.Errorf("some internal failure")},
+				wantCode: codes.Internal,
 			},
 		}
 

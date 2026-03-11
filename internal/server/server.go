@@ -134,6 +134,12 @@ func (s *Server) StartSaga(ctx context.Context, req *pb.StartSagaRequest) (*pb.S
 
 	exec, err := s.engine.Start(ctx, req.SagaId)
 	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil, status.Error(codes.Canceled, "saga start canceled")
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, status.Error(codes.DeadlineExceeded, "saga start timed out")
+		}
 		return nil, status.Errorf(codes.Internal, "start saga: %v", err)
 	}
 

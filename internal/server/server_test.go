@@ -56,7 +56,7 @@ func newTestServer(t *testing.T, eng server.Engine) (pb.SagaOrchestratorClient, 
 		eng = engine.New(s)
 	}
 
-	grpcSrv := grpc.NewServer()
+	grpcSrv := grpc.NewServer(grpc.MaxRecvMsgSize(20 * 1024 * 1024))
 	pb.RegisterSagaOrchestratorServer(grpcSrv, server.New(s, eng))
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
@@ -141,6 +141,96 @@ func TestServer(t *testing.T) {
 					if resp.Saga.Status != pb.SagaStatus_SAGA_STATUS_PENDING {
 						t.Errorf("Status: got %v, want PENDING", resp.Saga.Status)
 					}
+				}
+			})
+		}
+	})
+
+	t.Run("CreateSaga/Validation", func(t *testing.T) {
+		bigPayload := make([]byte, 10*1024*1024+1)
+
+		tests := []struct {
+			name     string
+			req      *pb.CreateSagaRequest
+			wantCode codes.Code
+		}{
+			{
+				name:     "payload too large",
+				req:      &pb.CreateSagaRequest{Name: "saga", Steps: validSteps(), Payload: bigPayload},
+				wantCode: codes.InvalidArgument,
+			},
+			{
+				name: "invalid step name format — spaces",
+				req: &pb.CreateSagaRequest{Name: "saga", Steps: []*pb.StepDefinition{
+					{Name: "bad name", ForwardUrl: "http://x.com/f", CompensateUrl: "http://x.com/c"},
+				}},
+				wantCode: codes.InvalidArgument,
+			},
+			{
+				name: "invalid step name format — special chars",
+				req: &pb.CreateSagaRequest{Name: "saga", Steps: []*pb.StepDefinition{
+					{Name: "bad!name", ForwardUrl: "http://x.com/f", CompensateUrl: "http://x.com/c"},
+				}},
+				wantCode: codes.InvalidArgument,
+			},
+			{
+				name: "duplicate step names",
+				req: &pb.CreateSagaRequest{Name: "saga", Steps: []*pb.StepDefinition{
+					{Name: "step-1", ForwardUrl: "http://x.com/f", CompensateUrl: "http://x.com/c"},
+					{Name: "step-1", ForwardUrl: "http://x.com/f2", CompensateUrl: "http://x.com/c2"},
+				}},
+				wantCode: codes.InvalidArgument,
+			},
+			{
+				name: "file:// forward_url",
+				req: &pb.CreateSagaRequest{Name: "saga", Steps: []*pb.StepDefinition{
+					{Name: "step-1", ForwardUrl: "file:///etc/passwd", CompensateUrl: "http://x.com/c"},
+				}},
+				wantCode: codes.InvalidArgument,
+			},
+			{
+				name: "ftp:// compensate_url",
+				req: &pb.CreateSagaRequest{Name: "saga", Steps: []*pb.StepDefinition{
+					{Name: "step-1", ForwardUrl: "http://x.com/f", CompensateUrl: "ftp://x.com/c"},
+				}},
+				wantCode: codes.InvalidArgument,
+			},
+			{
+				name: "malformed forward_url",
+				req: &pb.CreateSagaRequest{Name: "saga", Steps: []*pb.StepDefinition{
+					{Name: "step-1", ForwardUrl: "not a url", CompensateUrl: "http://x.com/c"},
+				}},
+				wantCode: codes.InvalidArgument,
+			},
+			{
+				name: "timeout_seconds too large",
+				req: &pb.CreateSagaRequest{Name: "saga", Steps: []*pb.StepDefinition{
+					{Name: "step-1", ForwardUrl: "http://x.com/f", CompensateUrl: "http://x.com/c", TimeoutSeconds: 3601},
+				}},
+				wantCode: codes.InvalidArgument,
+			},
+			{
+				name: "timeout_seconds=0 allowed (use default)",
+				req: &pb.CreateSagaRequest{Name: "saga", Steps: []*pb.StepDefinition{
+					{Name: "step-1", ForwardUrl: "http://x.com/f", CompensateUrl: "http://x.com/c", TimeoutSeconds: 0},
+				}},
+				wantCode: codes.OK,
+			},
+			{
+				name: "timeout_seconds=3600 at boundary",
+				req: &pb.CreateSagaRequest{Name: "saga", Steps: []*pb.StepDefinition{
+					{Name: "step-1", ForwardUrl: "http://x.com/f", CompensateUrl: "http://x.com/c", TimeoutSeconds: 3600},
+				}},
+				wantCode: codes.OK,
+			},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				client, _ := newTestServer(t, nil)
+				_, err := client.CreateSaga(context.Background(), tc.req)
+				if code := status.Code(err); code != tc.wantCode {
+					t.Errorf("code: got %v, want %v (err=%v)", code, tc.wantCode, err)
 				}
 			})
 		}

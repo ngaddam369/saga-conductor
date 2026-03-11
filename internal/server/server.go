@@ -3,6 +3,10 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net/url"
+	"regexp"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,6 +18,23 @@ import (
 	"github.com/ngaddam369/saga-conductor/internal/store"
 	pb "github.com/ngaddam369/saga-conductor/proto/saga/v1"
 )
+
+var stepNameRE = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
+
+// validateStepURL returns an error if raw is not a valid http/https URL within 2048 chars.
+func validateStepURL(raw string) error {
+	if len(raw) > 2048 {
+		return errors.New("URL exceeds 2048 characters")
+	}
+	u, err := url.ParseRequestURI(raw)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("scheme %q not allowed; use http or https", u.Scheme)
+	}
+	return nil
+}
 
 // Engine is the interface the server uses to start saga executions.
 type Engine interface {
@@ -40,19 +61,41 @@ func (s *Server) CreateSaga(ctx context.Context, req *pb.CreateSagaRequest) (*pb
 	if len(req.Steps) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "at least one step is required")
 	}
+	if len(req.Payload) > 10*1024*1024 {
+		return nil, status.Error(codes.InvalidArgument, "payload exceeds 10 MB")
+	}
 
+	seen := make(map[string]struct{}, len(req.Steps))
 	stepDefs := make([]saga.StepDefinition, len(req.Steps))
 	stepExecs := make([]saga.StepExecution, len(req.Steps))
 	for i, sd := range req.Steps {
 		if sd.Name == "" {
 			return nil, status.Errorf(codes.InvalidArgument, "step %d: name is required", i)
 		}
+		if !stepNameRE.MatchString(sd.Name) {
+			return nil, status.Errorf(codes.InvalidArgument, "step %d: name must match ^[a-zA-Z0-9_-]{1,64}$", i)
+		}
+		if _, dup := seen[sd.Name]; dup {
+			return nil, status.Errorf(codes.InvalidArgument, "duplicate step name %q", sd.Name)
+		}
+		seen[sd.Name] = struct{}{}
+
 		if sd.ForwardUrl == "" {
 			return nil, status.Errorf(codes.InvalidArgument, "step %d: forward_url is required", i)
+		}
+		if err := validateStepURL(sd.ForwardUrl); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "step %d: forward_url: %v", i, err)
 		}
 		if sd.CompensateUrl == "" {
 			return nil, status.Errorf(codes.InvalidArgument, "step %d: compensate_url is required", i)
 		}
+		if err := validateStepURL(sd.CompensateUrl); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "step %d: compensate_url: %v", i, err)
+		}
+		if sd.TimeoutSeconds != 0 && (sd.TimeoutSeconds < 1 || sd.TimeoutSeconds > 3600) {
+			return nil, status.Errorf(codes.InvalidArgument, "step %d: timeout_seconds must be in [1, 3600]", i)
+		}
+
 		stepDefs[i] = saga.StepDefinition{
 			Name:           sd.Name,
 			ForwardURL:     sd.ForwardUrl,

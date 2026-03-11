@@ -201,6 +201,29 @@ func TestEngine(t *testing.T) {
 		}
 	})
 
+	t.Run("StepDefsMismatch", func(t *testing.T) {
+		eng, s := newEngine(t)
+
+		// Manually write a corrupted saga where Steps and StepDefs lengths differ.
+		exec := &saga.Execution{
+			ID:        "saga-1",
+			Name:      "test-saga",
+			Status:    saga.SagaStatusPending,
+			StepDefs:  []saga.StepDefinition{{Name: "step-1", ForwardURL: "http://x.com", CompensateURL: "http://x.com"}},
+			Steps:     []saga.StepExecution{}, // mismatched: 0 steps, 1 def
+			Payload:   []byte(`{}`),
+			CreatedAt: time.Now().UTC(),
+		}
+		if err := s.Create(context.Background(), exec); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+
+		_, err := eng.Start(context.Background(), "saga-1")
+		if err == nil {
+			t.Fatal("expected error for Steps/StepDefs length mismatch, got nil")
+		}
+	})
+
 	t.Run("StepsPersistedAfterCrashResume", func(t *testing.T) {
 		// Simulate crash-safety: create a saga in RUNNING state mid-way (as if
 		// the orchestrator crashed after persisting step-1 SUCCEEDED), then

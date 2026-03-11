@@ -43,6 +43,9 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 	if exec.Status != saga.SagaStatusPending {
 		return nil, fmt.Errorf("saga %s is %s, want PENDING", id, exec.Status)
 	}
+	if len(exec.Steps) != len(exec.StepDefs) {
+		return nil, fmt.Errorf("saga %s: corrupted — Steps length %d != StepDefs length %d", id, len(exec.Steps), len(exec.StepDefs))
+	}
 
 	now := time.Now().UTC()
 	exec.Status = saga.SagaStatusRunning

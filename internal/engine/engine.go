@@ -36,6 +36,10 @@ func New(s store.Store) *Engine {
 // previously succeeded steps. Start blocks until the saga reaches a terminal
 // state (COMPLETED or FAILED) and then returns the final execution.
 func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("context already done: %w", err)
+	}
+
 	exec, err := e.store.Get(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("get saga: %w", err)

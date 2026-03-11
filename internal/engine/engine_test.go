@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -198,6 +199,31 @@ func TestEngine(t *testing.T) {
 					t.Errorf("expected error starting saga in status %q, got nil", tc.status)
 				}
 			})
+		}
+	})
+
+	t.Run("ContextAlreadyCanceled", func(t *testing.T) {
+		eng, s := newEngine(t)
+
+		seedSaga(t, s, []saga.StepDefinition{
+			{Name: "step-1", ForwardURL: "http://x.com", CompensateURL: "http://x.com"},
+		})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // cancel before calling Start
+
+		_, err := eng.Start(ctx, "saga-1")
+		if err == nil {
+			t.Fatal("expected error for cancelled context, got nil")
+		}
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("expected errors.Is(err, context.Canceled), got: %v", err)
+		}
+
+		// Saga must still be PENDING — engine must not have written RUNNING.
+		got, _ := s.Get(context.Background(), "saga-1")
+		if got.Status != saga.SagaStatusPending {
+			t.Errorf("saga status: got %q, want PENDING (engine must not have written RUNNING)", got.Status)
 		}
 	})
 

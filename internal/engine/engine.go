@@ -9,26 +9,49 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/ngaddam369/saga-conductor/internal/saga"
 	"github.com/ngaddam369/saga-conductor/internal/store"
 )
 
-const defaultStepTimeout = 30 * time.Second
-
 // Engine executes sagas stored in a Store.
 type Engine struct {
-	store      store.Store
-	httpClient *http.Client
+	store          store.Store
+	httpClient     *http.Client
+	defaultTimeout time.Duration
 }
 
 // New returns an Engine backed by the given store.
 func New(s store.Store) *Engine {
+	timeout := 30 * time.Second
+	if v := os.Getenv("STEP_TIMEOUT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			timeout = time.Duration(n) * time.Second
+		}
+	}
+
+	transport := &http.Transport{
+		DialContext:     (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+		MaxIdleConns:    100,
+		MaxConnsPerHost: 10,
+		IdleConnTimeout: 90 * time.Second,
+	}
 	return &Engine{
-		store:      s,
-		httpClient: &http.Client{},
+		store:          s,
+		defaultTimeout: timeout,
+		httpClient: &http.Client{
+			Transport: transport,
+			// Never follow redirects — a 3xx to file:// or an internal service
+			// is a silent SSRF vector.
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 }
 
@@ -151,7 +174,7 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 // callHTTP POSTs payload to url, returning an error for non-2xx responses or
 // transport failures.
 func (e *Engine) callHTTP(ctx context.Context, url string, payload []byte, timeoutSeconds int) error {
-	timeout := defaultStepTimeout
+	timeout := e.defaultTimeout
 	if timeoutSeconds > 0 {
 		timeout = time.Duration(timeoutSeconds) * time.Second
 	}
@@ -169,13 +192,27 @@ func (e *Engine) callHTTP(ctx context.Context, url string, payload []byte, timeo
 	if err != nil {
 		return fmt.Errorf("http post %s: %w", url, err)
 	}
-	defer func() {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-	}()
 
+	// Determine step outcome before touching the body.
+	var stepErr error
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("step returned HTTP %d", resp.StatusCode)
+		stepErr = fmt.Errorf("step returned HTTP %d", resp.StatusCode)
+	}
+
+	// Drain body to allow connection reuse, then close.
+	// Step failure takes precedence — drain/close errors only surface when
+	// the step itself succeeded.
+	_, drainErr := io.Copy(io.Discard, resp.Body)
+	closeErr := resp.Body.Close()
+
+	if stepErr != nil {
+		return stepErr
+	}
+	if drainErr != nil {
+		return fmt.Errorf("drain response body: %w", drainErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close response body: %w", closeErr)
 	}
 	return nil
 }

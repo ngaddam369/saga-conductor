@@ -203,6 +203,60 @@ func TestEngine(t *testing.T) {
 		}
 	})
 
+	t.Run("StepTimeoutEnvVar", func(t *testing.T) {
+		// A step server that hangs must be aborted within the configured timeout.
+		// t.Setenv must be called before newEngine so New() reads the env var.
+		t.Setenv("STEP_TIMEOUT_SECONDS", "1")
+		eng, s := newEngine(t)
+
+		hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			time.Sleep(5 * time.Second) // longer than the 1s timeout
+		}))
+		t.Cleanup(hang.Close)
+
+		seedSaga(t, s, []saga.StepDefinition{
+			{Name: "step-1", ForwardURL: hang.URL, CompensateURL: hang.URL},
+		})
+
+		start := time.Now()
+		exec, err := eng.Start(context.Background(), "saga-1")
+		elapsed := time.Since(start)
+
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if exec.Status != saga.SagaStatusFailed {
+			t.Errorf("Status: got %q, want FAILED", exec.Status)
+		}
+		if elapsed > 3*time.Second {
+			t.Errorf("took %v, expected step to be aborted within ~1s", elapsed)
+		}
+	})
+
+	t.Run("HTTPRedirectRejected", func(t *testing.T) {
+		// A step endpoint that redirects must be treated as a failure, not
+		// silently followed — redirects are a potential SSRF vector.
+		eng, s := newEngine(t)
+
+		target, _ := stepServer(t, http.StatusOK)
+		redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, target.URL, http.StatusFound)
+		}))
+		t.Cleanup(redirect.Close)
+
+		seedSaga(t, s, []saga.StepDefinition{
+			{Name: "step-1", ForwardURL: redirect.URL, CompensateURL: redirect.URL},
+		})
+
+		exec, err := eng.Start(context.Background(), "saga-1")
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if exec.Status != saga.SagaStatusFailed {
+			t.Errorf("Status: got %q, want FAILED — redirect must not be followed", exec.Status)
+		}
+	})
+
 	t.Run("FailedStepErrorIsHTTPStatus", func(t *testing.T) {
 		// Verifies that when a step returns a non-2xx response the error message
 		// reflects the HTTP status code, not a body-close side-effect.

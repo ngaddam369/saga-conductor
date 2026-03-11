@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 
 	"github.com/ngaddam369/saga-conductor/internal/engine"
 	"github.com/ngaddam369/saga-conductor/internal/server"
@@ -44,6 +45,15 @@ func run() error {
 	grpcServer := grpc.NewServer(
 		grpc.MaxRecvMsgSize(cfg.grpcMaxRecvMB*1024*1024),
 		grpc.MaxSendMsgSize(cfg.grpcMaxSendMB*1024*1024),
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			MaxConnectionIdle: time.Duration(cfg.grpcMaxConnIdleMinutes) * time.Minute,
+			Time:              time.Duration(cfg.grpcKeepaliveTimeMinutes) * time.Minute,
+			Timeout:           time.Duration(cfg.grpcKeepaliveTimeoutSecs) * time.Second,
+		}),
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             time.Duration(cfg.grpcKeepaliveMinTimeSecs) * time.Second,
+			PermitWithoutStream: true,
+		}),
 	)
 	pb.RegisterSagaOrchestratorServer(grpcServer, srv)
 

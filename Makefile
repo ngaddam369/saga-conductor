@@ -2,7 +2,7 @@ BINARY   := saga-conductor
 MODULE   := github.com/ngaddam369/saga-conductor
 PROTO_DIR := proto/saga/v1
 
-.PHONY: build lint test proto verify clean tidy
+.PHONY: build lint test test-integration proto verify clean tidy
 
 ## build: compile the server binary
 build:
@@ -16,6 +16,10 @@ lint:
 test:
 	go test -v -race -count=1 -coverprofile=coverage.out ./...
 	@go tool cover -func=coverage.out | grep -E "^total|^github"
+
+## test-integration: run integration tests (requires -tags integration)
+test-integration:
+	go test -v -race -count=1 -tags integration ./...
 
 ## proto: regenerate Go code from .proto files
 ## Requires: protoc + protoc-gen-go + protoc-gen-go-grpc

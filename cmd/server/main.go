@@ -41,7 +41,10 @@ func run() error {
 	eng := engine.New(s)
 	srv := server.New(s, eng)
 
-	grpcServer := grpc.NewServer()
+	grpcServer := grpc.NewServer(
+		grpc.MaxRecvMsgSize(cfg.grpcMaxRecvMB*1024*1024),
+		grpc.MaxSendMsgSize(cfg.grpcMaxSendMB*1024*1024),
+	)
 	pb.RegisterSagaOrchestratorServer(grpcServer, srv)
 
 	lis, err := net.Listen("tcp", cfg.grpcAddr)

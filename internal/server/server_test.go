@@ -147,6 +147,67 @@ func TestServer(t *testing.T) {
 		}
 	})
 
+	t.Run("CreateSaga/GRPCRecvSizeLimit", func(t *testing.T) {
+		// When the gRPC server is configured with a small MaxRecvMsgSize the
+		// transport itself rejects messages above that limit with ResourceExhausted
+		// before they reach the handler.
+		tests := []struct {
+			name        string
+			recvLimitMB int
+			payloadMB   int
+			wantCode    codes.Code
+		}{
+			{
+				name:        "payload within limit passes to handler",
+				recvLimitMB: 2,
+				payloadMB:   1,
+				wantCode:    codes.OK,
+			},
+			{
+				name:        "payload exceeds transport limit — ResourceExhausted",
+				recvLimitMB: 1,
+				payloadMB:   2,
+				wantCode:    codes.ResourceExhausted,
+			},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				s, err := store.NewBoltStore(filepath.Join(t.TempDir(), "test.db"))
+				if err != nil {
+					t.Fatalf("NewBoltStore: %v", err)
+				}
+				t.Cleanup(func() { _ = s.Close() })
+
+				grpcSrv := grpc.NewServer(grpc.MaxRecvMsgSize(tc.recvLimitMB * 1024 * 1024))
+				pb.RegisterSagaOrchestratorServer(grpcSrv, server.New(s, engine.New(s)))
+
+				lis, err := net.Listen("tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatalf("listen: %v", err)
+				}
+				go func() { _ = grpcSrv.Serve(lis) }()
+				t.Cleanup(grpcSrv.GracefulStop)
+
+				conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+				if err != nil {
+					t.Fatalf("dial: %v", err)
+				}
+				t.Cleanup(func() { _ = conn.Close() })
+
+				client := pb.NewSagaOrchestratorClient(conn)
+				_, err = client.CreateSaga(context.Background(), &pb.CreateSagaRequest{
+					Name:    "saga",
+					Steps:   validSteps(),
+					Payload: make([]byte, tc.payloadMB*1024*1024),
+				})
+				if code := status.Code(err); code != tc.wantCode {
+					t.Errorf("code: got %v, want %v (err=%v)", code, tc.wantCode, err)
+				}
+			})
+		}
+	})
+
 	t.Run("CreateSaga/Validation", func(t *testing.T) {
 		bigPayload := make([]byte, 10*1024*1024+1)
 

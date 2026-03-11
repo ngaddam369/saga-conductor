@@ -2,11 +2,15 @@ BINARY   := saga-conductor
 MODULE   := github.com/ngaddam369/saga-conductor
 PROTO_DIR := proto/saga/v1
 
-.PHONY: build lint test test-integration proto verify clean tidy
+.PHONY: build fmt lint test test-integration proto verify clean tidy
 
 ## build: compile the server binary
 build:
 	go build -o bin/$(BINARY) ./cmd/server
+
+## fmt: format all Go source files in place
+fmt:
+	gofmt -w .
 
 ## lint: run golangci-lint (includes govet and gofmt checks)
 lint:

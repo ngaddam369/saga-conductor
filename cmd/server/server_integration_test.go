@@ -260,10 +260,10 @@ func TestIntegration(t *testing.T) {
 
 	t.Run("SagaExecution", func(t *testing.T) {
 		tests := []struct {
-			name         string
-			step1Code    int
-			step2Code    int
-			wantStatus   pb.SagaStatus
+			name          string
+			step1Code     int
+			step2Code     int
+			wantStatus    pb.SagaStatus
 			wantCompCalls int // expected compensate calls
 		}{
 			{

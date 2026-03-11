@@ -78,6 +78,19 @@ func seedSaga(t *testing.T, s *store.BoltStore, steps []saga.StepDefinition) *sa
 }
 
 func TestEngine(t *testing.T) {
+	t.Run("ZeroSteps", func(t *testing.T) {
+		eng, s := newEngine(t)
+		seedSaga(t, s, []saga.StepDefinition{})
+
+		exec, err := eng.Start(context.Background(), "saga-1")
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if exec.Status != saga.SagaStatusCompleted {
+			t.Errorf("status: got %q, want COMPLETED", exec.Status)
+		}
+	})
+
 	t.Run("AllStepsSucceed", func(t *testing.T) {
 		eng, s := newEngine(t)
 

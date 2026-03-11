@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"go.etcd.io/bbolt"
+
 	"github.com/ngaddam369/saga-conductor/internal/saga"
 	"github.com/ngaddam369/saga-conductor/internal/store"
 )
@@ -282,6 +284,57 @@ func TestBoltStore(t *testing.T) {
 		_, err := s.List(canceled, "")
 		if err == nil {
 			t.Fatal("expected error from canceled context, got nil")
+		}
+	})
+
+	t.Run("CorruptedJSON", func(t *testing.T) {
+		tests := []struct {
+			name string
+			call func(s *store.BoltStore) error
+		}{
+			{"Get returns error", func(s *store.BoltStore) error {
+				_, err := s.Get(context.Background(), "corrupt-id")
+				return err
+			}},
+			{"List returns error", func(s *store.BoltStore) error {
+				_, err := s.List(context.Background(), "")
+				return err
+			}},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "corrupt.db")
+
+				// Write corrupt JSON directly via raw bbolt, then close.
+				rawDB, err := bbolt.Open(path, 0o600, &bbolt.Options{Timeout: 2 * time.Second})
+				if err != nil {
+					t.Fatalf("bbolt.Open: %v", err)
+				}
+				if err := rawDB.Update(func(tx *bbolt.Tx) error {
+					b, err := tx.CreateBucketIfNotExists([]byte("sagas"))
+					if err != nil {
+						return err
+					}
+					return b.Put([]byte("corrupt-id"), []byte(`{this is not valid json`))
+				}); err != nil {
+					t.Fatalf("inject corrupt record: %v", err)
+				}
+				if err := rawDB.Close(); err != nil {
+					t.Fatalf("close rawDB: %v", err)
+				}
+
+				// Reopen via BoltStore and verify the operation errors gracefully.
+				s, err := store.NewBoltStore(path)
+				if err != nil {
+					t.Fatalf("NewBoltStore: %v", err)
+				}
+				t.Cleanup(func() { _ = s.Close() })
+
+				if err := tc.call(s); err == nil {
+					t.Errorf("%s: expected error for corrupted JSON, got nil", tc.name)
+				}
+			})
 		}
 	})
 

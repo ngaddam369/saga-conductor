@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -199,6 +200,32 @@ func TestEngine(t *testing.T) {
 					t.Errorf("expected error starting saga in status %q, got nil", tc.status)
 				}
 			})
+		}
+	})
+
+	t.Run("FailedStepErrorIsHTTPStatus", func(t *testing.T) {
+		// Verifies that when a step returns a non-2xx response the error message
+		// reflects the HTTP status code, not a body-close side-effect.
+		eng, s := newEngine(t)
+		fwd, _ := stepServer(t, http.StatusUnprocessableEntity)
+
+		seedSaga(t, s, []saga.StepDefinition{
+			{Name: "step-1", ForwardURL: fwd.URL, CompensateURL: fwd.URL},
+		})
+
+		exec, err := eng.Start(context.Background(), "saga-1")
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if exec.Status != saga.SagaStatusFailed {
+			t.Errorf("Status: got %q, want FAILED", exec.Status)
+		}
+		if exec.Steps[0].Error == "" {
+			t.Error("expected step error to be set")
+		}
+		wantSubstr := "422"
+		if !strings.Contains(exec.Steps[0].Error, wantSubstr) {
+			t.Errorf("step error %q does not contain %q", exec.Steps[0].Error, wantSubstr)
 		}
 	})
 

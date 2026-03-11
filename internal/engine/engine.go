@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -169,9 +170,8 @@ func (e *Engine) callHTTP(ctx context.Context, url string, payload []byte, timeo
 		return fmt.Errorf("http post %s: %w", url, err)
 	}
 	defer func() {
-		if err = resp.Body.Close(); err != nil {
-			err = fmt.Errorf("close response body: %w", err)
-		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
 	}()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {

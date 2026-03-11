@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"os"
@@ -35,12 +36,23 @@ func WithRetryBackoff(d time.Duration) Option {
 	}
 }
 
+// WithDefaultMaxRetries overrides the engine-wide default number of HTTP step
+// retries. Tests set this to 0 to disable retries and keep existing test
+// behaviour unchanged.
+func WithDefaultMaxRetries(n int) Option {
+	return func(e *Engine) {
+		e.defaultMaxRetries = n
+	}
+}
+
 // Engine executes sagas stored in a Store.
 type Engine struct {
-	store          store.Store
-	httpClient     *http.Client
-	defaultTimeout time.Duration
-	retryBackoff   time.Duration
+	store              store.Store
+	httpClient         *http.Client
+	defaultTimeout     time.Duration
+	retryBackoff       time.Duration
+	defaultMaxRetries  int
+	defaultRetryBaseMs int
 }
 
 // New returns an Engine backed by the given store.
@@ -58,10 +70,25 @@ func New(s store.Store, opts ...Option) *Engine {
 		MaxConnsPerHost: 10,
 		IdleConnTimeout: 90 * time.Second,
 	}
+	maxRetries := 3
+	if v := os.Getenv("STEP_MAX_RETRIES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			maxRetries = n
+		}
+	}
+	retryBaseMs := 100
+	if v := os.Getenv("STEP_RETRY_BACKOFF_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			retryBaseMs = n
+		}
+	}
+
 	eng := &Engine{
-		store:          s,
-		defaultTimeout: timeout,
-		retryBackoff:   defaultRetryBackoff,
+		store:              s,
+		defaultTimeout:     timeout,
+		retryBackoff:       defaultRetryBackoff,
+		defaultMaxRetries:  maxRetries,
+		defaultRetryBaseMs: retryBaseMs,
 		httpClient: &http.Client{
 			Transport: transport,
 			// Never follow redirects — a 3xx to file:// or an internal service
@@ -144,7 +171,7 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 			return nil, fmt.Errorf("persist step RUNNING: %w", err)
 		}
 
-		err = e.callHTTP(ctx, def.ForwardURL, exec.Payload, def.TimeoutSeconds)
+		err = e.callHTTPWithRetry(ctx, def.ForwardURL, exec.Payload, def)
 
 		t = time.Now().UTC()
 		step.CompletedAt = &t
@@ -199,7 +226,7 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 			return nil, fmt.Errorf("persist step COMPENSATING: %w", err)
 		}
 
-		err = e.callHTTP(ctx, def.CompensateURL, exec.Payload, def.TimeoutSeconds)
+		err = e.callHTTPWithRetry(ctx, def.CompensateURL, exec.Payload, def)
 
 		t := time.Now().UTC()
 		step.CompletedAt = &t
@@ -226,6 +253,41 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 	}
 
 	return exec, nil
+}
+
+// callHTTPWithRetry calls callHTTP and retries on failure using exponential
+// backoff with full jitter: sleep = rand(0, base * 2^attempt).
+// The number of retries and base backoff come from the StepDefinition if set,
+// otherwise from the engine defaults. Context cancellation stops retries early.
+func (e *Engine) callHTTPWithRetry(ctx context.Context, url string, payload []byte, def saga.StepDefinition) error {
+	maxRetries := e.defaultMaxRetries
+	if def.MaxRetries > 0 {
+		maxRetries = def.MaxRetries
+	}
+	baseMs := e.defaultRetryBaseMs
+	if def.RetryBackoffMs > 0 {
+		baseMs = def.RetryBackoffMs
+	}
+
+	var err error
+	for attempt := range maxRetries + 1 {
+		err = e.callHTTP(ctx, url, payload, def.TimeoutSeconds)
+		if err == nil {
+			return nil
+		}
+		if attempt == maxRetries {
+			break
+		}
+		// Exponential backoff with full jitter: rand(0, base * 2^attempt).
+		cap := time.Duration(baseMs) * time.Millisecond * (1 << attempt)
+		sleep := time.Duration(rand.Int64N(int64(cap) + 1))
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(sleep):
+		}
+	}
+	return err
 }
 
 // callHTTP POSTs payload to url, returning an error for non-2xx responses or

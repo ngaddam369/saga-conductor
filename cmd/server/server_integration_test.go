@@ -337,6 +337,71 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("StepRetry", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			maxRetries string // STEP_MAX_RETRIES env value
+			failFirst  int    // how many requests return 500 before 200
+			wantStatus pb.SagaStatus
+		}{
+			{
+				name:       "transient failure retried to completion",
+				maxRetries: "3",
+				failFirst:  2,
+				wantStatus: pb.SagaStatus_SAGA_STATUS_COMPLETED,
+			},
+			{
+				name:       "retries exhausted triggers compensation",
+				maxRetries: "2",
+				failFirst:  10, // always fails within retry budget
+				wantStatus: pb.SagaStatus_SAGA_STATUS_FAILED,
+			},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Setenv("STEP_MAX_RETRIES", tc.maxRetries)
+				t.Setenv("STEP_RETRY_BACKOFF_MS", "1")
+
+				calls := 0
+				stepSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					calls++
+					if calls <= tc.failFirst {
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+					w.WriteHeader(http.StatusOK)
+				}))
+				t.Cleanup(stepSrv.Close)
+
+				// productionGRPCServer calls engine.New internally, which reads
+				// STEP_MAX_RETRIES / STEP_RETRY_BACKOFF_MS at construction time.
+				client := productionGRPCServer(t, defaultTestConfig())
+
+				created, err := client.CreateSaga(context.Background(), &pb.CreateSagaRequest{
+					Name: "retry-integration",
+					Steps: []*pb.StepDefinition{
+						{Name: "step-1", ForwardUrl: stepSrv.URL, CompensateUrl: stepSrv.URL},
+					},
+				})
+				if err != nil {
+					t.Fatalf("CreateSaga: %v", err)
+				}
+
+				started, err := client.StartSaga(context.Background(), &pb.StartSagaRequest{
+					SagaId: created.Saga.Id,
+				})
+				if err != nil {
+					t.Fatalf("StartSaga: %v", err)
+				}
+
+				if started.Saga.Status != tc.wantStatus {
+					t.Errorf("status: got %v, want %v", started.Saga.Status, tc.wantStatus)
+				}
+			})
+		}
+	})
+
 	t.Run("StartSagaNotPending", func(t *testing.T) {
 		tests := []struct {
 			name     string

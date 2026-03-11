@@ -38,6 +38,13 @@ type StepDefinition struct {
 	// TimeoutSeconds caps how long the orchestrator waits for the HTTP response.
 	// Zero means the server-wide default is used.
 	TimeoutSeconds int `json:"timeout_seconds"`
+	// MaxRetries is the number of times to retry a failed step HTTP call before
+	// triggering compensation. Zero means the engine default is used.
+	MaxRetries int `json:"max_retries,omitempty"`
+	// RetryBackoffMs is the base backoff in milliseconds for the first retry.
+	// Subsequent retries use base * 2^attempt + jitter. Zero means the engine
+	// default is used.
+	RetryBackoffMs int `json:"retry_backoff_ms,omitempty"`
 }
 
 // StepExecution is the runtime state of a step within a saga execution.

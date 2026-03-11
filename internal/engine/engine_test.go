@@ -37,7 +37,7 @@ func newEngine(t *testing.T) (*engine.Engine, *store.BoltStore) {
 		t.Fatalf("NewBoltStore: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	return engine.New(s, engine.WithRetryBackoff(time.Millisecond)), s
+	return engine.New(s, engine.WithRetryBackoff(time.Millisecond), engine.WithDefaultMaxRetries(0)), s
 }
 
 // faultyStore wraps a real Store and injects Update failures for the first
@@ -361,6 +361,106 @@ func TestEngine(t *testing.T) {
 		_, err := eng.Start(context.Background(), "saga-1")
 		if err == nil {
 			t.Fatal("expected error for Steps/StepDefs length mismatch, got nil")
+		}
+	})
+
+	t.Run("StepHTTPRetry", func(t *testing.T) {
+		tests := []struct {
+			name       string
+			failFirst  int // number of requests that return 500 before succeeding
+			maxRetries int // StepDefinition.MaxRetries (must be > 0 to override engine default)
+			wantStatus saga.SagaStatus
+		}{
+			{"succeeds on retry", 1, 3, saga.SagaStatusCompleted},
+			{"exhausts retries → FAILED", 5, 2, saga.SagaStatusFailed},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				calls := 0
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					calls++
+					if calls <= tc.failFirst {
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+					w.WriteHeader(http.StatusOK)
+				}))
+				t.Cleanup(srv.Close)
+
+				eng, s := newEngine(t)
+				if err := s.Create(context.Background(), &saga.Execution{
+					ID:        "retry-http-saga",
+					Name:      "retry-http",
+					Status:    saga.SagaStatusPending,
+					CreatedAt: time.Now().UTC(),
+					StepDefs: []saga.StepDefinition{{
+						Name:           "s1",
+						ForwardURL:     srv.URL,
+						CompensateURL:  srv.URL,
+						MaxRetries:     tc.maxRetries,
+						RetryBackoffMs: 1, // 1ms base so tests run fast
+					}},
+					Steps: []saga.StepExecution{{Name: "s1", Status: saga.StepStatusPending}},
+				}); err != nil {
+					t.Fatalf("Create: %v", err)
+				}
+
+				exec, err := eng.Start(context.Background(), "retry-http-saga")
+				if err != nil {
+					t.Fatalf("Start: %v", err)
+				}
+				if exec.Status != tc.wantStatus {
+					t.Errorf("status: got %q, want %q", exec.Status, tc.wantStatus)
+				}
+			})
+		}
+	})
+
+	t.Run("StepHTTPRetryEnvDefaults", func(t *testing.T) {
+		// Verify STEP_MAX_RETRIES and STEP_RETRY_BACKOFF_MS env vars are
+		// picked up by New(). Set max retries to 2; a step that fails once
+		// should still complete.
+		t.Setenv("STEP_MAX_RETRIES", "2")
+		t.Setenv("STEP_RETRY_BACKOFF_MS", "1")
+
+		calls := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			calls++
+			if calls == 1 {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(srv.Close)
+
+		// Create engine and store directly (not via newEngine) so env vars
+		// set above are read by engine.New without being overridden.
+		s, err := store.NewBoltStore(filepath.Join(t.TempDir(), "env-retry.db"))
+		if err != nil {
+			t.Fatalf("NewBoltStore: %v", err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		eng := engine.New(s, engine.WithRetryBackoff(time.Millisecond))
+
+		if err := s.Create(context.Background(), &saga.Execution{
+			ID:        "env-retry-saga",
+			Name:      "env-retry",
+			Status:    saga.SagaStatusPending,
+			CreatedAt: time.Now().UTC(),
+			StepDefs:  []saga.StepDefinition{{Name: "s1", ForwardURL: srv.URL, CompensateURL: srv.URL}},
+			Steps:     []saga.StepExecution{{Name: "s1", Status: saga.StepStatusPending}},
+		}); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+
+		exec, err := eng.Start(context.Background(), "env-retry-saga")
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if exec.Status != saga.SagaStatusCompleted {
+			t.Errorf("status: got %q, want COMPLETED", exec.Status)
 		}
 	})
 

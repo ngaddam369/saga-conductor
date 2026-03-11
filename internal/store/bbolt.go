@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
+	"time"
 
 	"go.etcd.io/bbolt"
 
@@ -26,10 +29,22 @@ type BoltStore struct {
 	db *bbolt.DB
 }
 
+const defaultLockTimeout = 5 * time.Second
+
+func lockTimeout() time.Duration {
+	if v := os.Getenv("DB_LOCK_TIMEOUT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return defaultLockTimeout
+}
+
 // NewBoltStore opens (or creates) a bbolt database at path and returns a
-// ready-to-use BoltStore.
+// ready-to-use BoltStore. It fails fast if the file lock cannot be acquired
+// within DB_LOCK_TIMEOUT_SECONDS (default 5s).
 func NewBoltStore(path string) (*BoltStore, error) {
-	db, err := bbolt.Open(path, 0o600, nil)
+	db, err := bbolt.Open(path, 0o600, &bbolt.Options{Timeout: lockTimeout()})
 	if err != nil {
 		return nil, fmt.Errorf("open bbolt db: %w", err)
 	}

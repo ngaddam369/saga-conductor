@@ -33,6 +33,68 @@ func newExec(id, name string, status saga.SagaStatus) *saga.Execution {
 	}
 }
 
+func TestNewBoltStore(t *testing.T) {
+	t.Run("LockTimeout", func(t *testing.T) {
+		tests := []struct {
+			name        string
+			envVal      string
+			wantTimeout time.Duration
+		}{
+			{"default when unset", "", 5 * time.Second},
+			{"custom value from env", "10", 10 * time.Second},
+			{"zero falls back to default", "0", 5 * time.Second},
+			{"negative falls back to default", "-1", 5 * time.Second},
+			{"non-numeric falls back to default", "bad", 5 * time.Second},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				if tc.envVal != "" {
+					t.Setenv("DB_LOCK_TIMEOUT_SECONDS", tc.envVal)
+				}
+				// Open and immediately close — we just want it to succeed
+				// with the configured timeout (positive case).
+				path := filepath.Join(t.TempDir(), "lock-test.db")
+				s, err := store.NewBoltStore(path)
+				if err != nil {
+					t.Fatalf("NewBoltStore: %v", err)
+				}
+				if err := s.Close(); err != nil {
+					t.Fatalf("Close: %v", err)
+				}
+			})
+		}
+	})
+
+	t.Run("LockContention", func(t *testing.T) {
+		// Hold the lock with a first store, then verify a second open
+		// with a short timeout returns an error rather than blocking.
+		t.Setenv("DB_LOCK_TIMEOUT_SECONDS", "1")
+		path := filepath.Join(t.TempDir(), "contention.db")
+
+		holder, err := store.NewBoltStore(path)
+		if err != nil {
+			t.Fatalf("open holder: %v", err)
+		}
+		defer func() {
+			if err := holder.Close(); err != nil {
+				t.Errorf("close holder: %v", err)
+			}
+		}()
+
+		start := time.Now()
+		_, err = store.NewBoltStore(path)
+		elapsed := time.Since(start)
+
+		if err == nil {
+			t.Fatal("expected error due to lock contention, got nil")
+		}
+		if elapsed > 3*time.Second {
+			t.Errorf("open took %v, expected to fail within ~1s timeout", elapsed)
+		}
+	})
+}
+
 func TestBoltStore(t *testing.T) {
 	t.Run("CreateAndGet", func(t *testing.T) {
 		s := newTestStore(t)

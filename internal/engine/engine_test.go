@@ -3,6 +3,7 @@ package engine_test
 import (
 	"context"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -36,7 +37,23 @@ func newEngine(t *testing.T) (*engine.Engine, *store.BoltStore) {
 		t.Fatalf("NewBoltStore: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	return engine.New(s), s
+	return engine.New(s, engine.WithRetryBackoff(time.Millisecond)), s
+}
+
+// faultyStore wraps a real Store and injects Update failures for the first
+// failUpdates calls, then delegates normally.
+type faultyStore struct {
+	store.Store
+	failUpdates int
+	calls       int
+}
+
+func (f *faultyStore) Update(ctx context.Context, exec *saga.Execution) error {
+	f.calls++
+	if f.calls <= f.failUpdates {
+		return errors.New("simulated store failure")
+	}
+	return f.Store.Update(ctx, exec)
 }
 
 func seedSaga(t *testing.T, s *store.BoltStore, steps []saga.StepDefinition) *saga.Execution {
@@ -331,6 +348,70 @@ func TestEngine(t *testing.T) {
 		_, err := eng.Start(context.Background(), "saga-1")
 		if err == nil {
 			t.Fatal("expected error for Steps/StepDefs length mismatch, got nil")
+		}
+	})
+
+	t.Run("StoreUpdateRetrySucceeds", func(t *testing.T) {
+		// First two Update calls fail; the third succeeds.
+		// The saga should still complete normally.
+		srv, _ := stepServer(t, http.StatusOK)
+		boltStore, err := store.NewBoltStore(filepath.Join(t.TempDir(), "test.db"))
+		if err != nil {
+			t.Fatalf("NewBoltStore: %v", err)
+		}
+		t.Cleanup(func() { _ = boltStore.Close() })
+
+		fs := &faultyStore{Store: boltStore, failUpdates: 2}
+		eng := engine.New(fs, engine.WithRetryBackoff(time.Millisecond))
+
+		if err := boltStore.Create(context.Background(), &saga.Execution{
+			ID:        "retry-saga",
+			Name:      "retry",
+			Status:    saga.SagaStatusPending,
+			CreatedAt: time.Now().UTC(),
+			StepDefs:  []saga.StepDefinition{{Name: "s1", ForwardURL: srv.URL, CompensateURL: srv.URL}},
+			Steps:     []saga.StepExecution{{Name: "s1", Status: saga.StepStatusPending}},
+		}); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+
+		exec, err := eng.Start(context.Background(), "retry-saga")
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if exec.Status != saga.SagaStatusCompleted {
+			t.Errorf("status: got %q, want COMPLETED", exec.Status)
+		}
+	})
+
+	t.Run("StoreUpdateExhausted", func(t *testing.T) {
+		// All Update calls fail — simulates disk full / store unavailable.
+		// Start() must return an error; the best-effort FAILED mark also fails
+		// (same faulty store) and logs to stderr.
+		srv, _ := stepServer(t, http.StatusOK)
+		boltStore, err := store.NewBoltStore(filepath.Join(t.TempDir(), "test.db"))
+		if err != nil {
+			t.Fatalf("NewBoltStore: %v", err)
+		}
+		t.Cleanup(func() { _ = boltStore.Close() })
+
+		fs := &faultyStore{Store: boltStore, failUpdates: math.MaxInt}
+		eng := engine.New(fs, engine.WithRetryBackoff(time.Millisecond))
+
+		if err := boltStore.Create(context.Background(), &saga.Execution{
+			ID:        "exhaust-saga",
+			Name:      "exhaust",
+			Status:    saga.SagaStatusPending,
+			CreatedAt: time.Now().UTC(),
+			StepDefs:  []saga.StepDefinition{{Name: "s1", ForwardURL: srv.URL, CompensateURL: srv.URL}},
+			Steps:     []saga.StepExecution{{Name: "s1", Status: saga.StepStatusPending}},
+		}); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+
+		_, err = eng.Start(context.Background(), "exhaust-saga")
+		if err == nil {
+			t.Fatal("expected error when store is unavailable, got nil")
 		}
 	})
 

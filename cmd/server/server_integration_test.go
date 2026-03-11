@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
@@ -252,6 +253,130 @@ func TestIntegration(t *testing.T) {
 
 				if resp.StatusCode != tc.wantCode {
 					t.Errorf("status: got %d, want %d", resp.StatusCode, tc.wantCode)
+				}
+			})
+		}
+	})
+
+	t.Run("SagaExecution", func(t *testing.T) {
+		tests := []struct {
+			name         string
+			step1Code    int
+			step2Code    int
+			wantStatus   pb.SagaStatus
+			wantCompCalls int // expected compensate calls
+		}{
+			{
+				name:          "all steps succeed → COMPLETED",
+				step1Code:     http.StatusOK,
+				step2Code:     http.StatusOK,
+				wantStatus:    pb.SagaStatus_SAGA_STATUS_COMPLETED,
+				wantCompCalls: 0,
+			},
+			{
+				name:          "second step fails → FAILED with step-1 compensated",
+				step1Code:     http.StatusOK,
+				step2Code:     http.StatusInternalServerError,
+				wantStatus:    pb.SagaStatus_SAGA_STATUS_FAILED,
+				wantCompCalls: 1, // step-1 compensation runs
+			},
+			{
+				name:          "first step fails → FAILED with no compensation",
+				step1Code:     http.StatusInternalServerError,
+				step2Code:     http.StatusOK,
+				wantStatus:    pb.SagaStatus_SAGA_STATUS_FAILED,
+				wantCompCalls: 0,
+			},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				compCalls := 0
+				step1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/comp" {
+						compCalls++
+						w.WriteHeader(http.StatusOK)
+						return
+					}
+					w.WriteHeader(tc.step1Code)
+				}))
+				t.Cleanup(step1.Close)
+
+				step2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(tc.step2Code)
+				}))
+				t.Cleanup(step2.Close)
+
+				client := productionGRPCServer(t, defaultTestConfig())
+
+				created, err := client.CreateSaga(context.Background(), &pb.CreateSagaRequest{
+					Name: "integration-exec",
+					Steps: []*pb.StepDefinition{
+						{Name: "step-1", ForwardUrl: step1.URL, CompensateUrl: step1.URL + "/comp"},
+						{Name: "step-2", ForwardUrl: step2.URL, CompensateUrl: step2.URL},
+					},
+				})
+				if err != nil {
+					t.Fatalf("CreateSaga: %v", err)
+				}
+
+				started, err := client.StartSaga(context.Background(), &pb.StartSagaRequest{
+					SagaId: created.Saga.Id,
+				})
+				if err != nil {
+					t.Fatalf("StartSaga: %v", err)
+				}
+
+				if started.Saga.Status != tc.wantStatus {
+					t.Errorf("status: got %v, want %v", started.Saga.Status, tc.wantStatus)
+				}
+				if compCalls != tc.wantCompCalls {
+					t.Errorf("compensation calls: got %d, want %d", compCalls, tc.wantCompCalls)
+				}
+			})
+		}
+	})
+
+	t.Run("StartSagaNotPending", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			wantCode codes.Code
+		}{
+			{"starting completed saga returns FailedPrecondition", codes.FailedPrecondition},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				step := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusOK)
+				}))
+				t.Cleanup(step.Close)
+
+				client := productionGRPCServer(t, defaultTestConfig())
+
+				created, err := client.CreateSaga(context.Background(), &pb.CreateSagaRequest{
+					Name: "double-start",
+					Steps: []*pb.StepDefinition{
+						{Name: "step-1", ForwardUrl: step.URL, CompensateUrl: step.URL},
+					},
+				})
+				if err != nil {
+					t.Fatalf("CreateSaga: %v", err)
+				}
+
+				// First start — must succeed.
+				if _, err := client.StartSaga(context.Background(), &pb.StartSagaRequest{
+					SagaId: created.Saga.Id,
+				}); err != nil {
+					t.Fatalf("first StartSaga: %v", err)
+				}
+
+				// Second start on already-completed saga.
+				_, err = client.StartSaga(context.Background(), &pb.StartSagaRequest{
+					SagaId: created.Saga.Id,
+				})
+				if code := status.Code(err); code != tc.wantCode {
+					t.Errorf("code: got %v, want %v (err=%v)", code, tc.wantCode, err)
 				}
 			})
 		}

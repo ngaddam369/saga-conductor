@@ -19,15 +19,32 @@ import (
 	"github.com/ngaddam369/saga-conductor/internal/store"
 )
 
+const (
+	storeMaxRetries     = 3
+	defaultRetryBackoff = 500 * time.Millisecond
+)
+
+// Option configures an Engine.
+type Option func(*Engine)
+
+// WithRetryBackoff sets the backoff between store.Update retry attempts.
+// The default is 500ms. Tests may pass a smaller value to keep runs fast.
+func WithRetryBackoff(d time.Duration) Option {
+	return func(e *Engine) {
+		e.retryBackoff = d
+	}
+}
+
 // Engine executes sagas stored in a Store.
 type Engine struct {
 	store          store.Store
 	httpClient     *http.Client
 	defaultTimeout time.Duration
+	retryBackoff   time.Duration
 }
 
 // New returns an Engine backed by the given store.
-func New(s store.Store) *Engine {
+func New(s store.Store, opts ...Option) *Engine {
 	timeout := 30 * time.Second
 	if v := os.Getenv("STEP_TIMEOUT_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -41,9 +58,10 @@ func New(s store.Store) *Engine {
 		MaxConnsPerHost: 10,
 		IdleConnTimeout: 90 * time.Second,
 	}
-	return &Engine{
+	eng := &Engine{
 		store:          s,
 		defaultTimeout: timeout,
+		retryBackoff:   defaultRetryBackoff,
 		httpClient: &http.Client{
 			Transport: transport,
 			// Never follow redirects — a 3xx to file:// or an internal service
@@ -52,6 +70,47 @@ func New(s store.Store) *Engine {
 				return http.ErrUseLastResponse
 			},
 		},
+	}
+	for _, o := range opts {
+		o(eng)
+	}
+	return eng
+}
+
+// updateWithRetry retries store.Update up to storeMaxRetries times with fixed
+// backoff. If the caller's context is done between retries the last store error
+// is returned immediately without waiting for the next attempt.
+func (e *Engine) updateWithRetry(ctx context.Context, exec *saga.Execution) error {
+	var err error
+	for i := range storeMaxRetries {
+		if err = e.store.Update(ctx, exec); err == nil {
+			return nil
+		}
+		if i < storeMaxRetries-1 {
+			select {
+			case <-ctx.Done():
+				return err
+			case <-time.After(e.retryBackoff):
+			}
+		}
+	}
+	return err
+}
+
+// markFailedBestEffort makes one final attempt to write a FAILED terminal state
+// using a fresh background context (the caller's context may already be done).
+// If the write also fails it logs to stderr so operators can manually recover.
+func (e *Engine) markFailedBestEffort(exec *saga.Execution, step, cause string) {
+	now := time.Now().UTC()
+	exec.Status = saga.SagaStatusFailed
+	exec.CompletedAt = &now
+	if step != "" {
+		exec.FailedStep = step
+	}
+	if err := e.store.Update(context.Background(), exec); err != nil {
+		fmt.Fprintf(os.Stderr,
+			"ERROR saga-conductor: saga %s step %q store unavailable (%s); manual recovery required\n",
+			exec.ID, step, cause)
 	}
 }
 
@@ -80,7 +139,8 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 		t := time.Now().UTC()
 		step.Status = saga.StepStatusRunning
 		step.StartedAt = &t
-		if err = e.store.Update(ctx, exec); err != nil {
+		if err = e.updateWithRetry(ctx, exec); err != nil {
+			e.markFailedBestEffort(exec, step.Name, err.Error())
 			return nil, fmt.Errorf("persist step RUNNING: %w", err)
 		}
 
@@ -93,15 +153,17 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 			step.Status = saga.StepStatusFailed
 			step.Error = err.Error()
 			exec.FailedStep = step.Name
-			if err = e.store.Update(ctx, exec); err != nil {
-				return nil, fmt.Errorf("persist step FAILED: %w", err)
+			if uerr := e.updateWithRetry(ctx, exec); uerr != nil {
+				e.markFailedBestEffort(exec, step.Name, uerr.Error())
+				return nil, fmt.Errorf("persist step FAILED: %w", uerr)
 			}
 			failedIdx = i
 			break
 		}
 
 		step.Status = saga.StepStatusSucceeded
-		if err = e.store.Update(ctx, exec); err != nil {
+		if err = e.updateWithRetry(ctx, exec); err != nil {
+			e.markFailedBestEffort(exec, step.Name, err.Error())
 			return nil, fmt.Errorf("persist step SUCCEEDED: %w", err)
 		}
 	}
@@ -110,14 +172,16 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 		completed := time.Now().UTC()
 		exec.Status = saga.SagaStatusCompleted
 		exec.CompletedAt = &completed
-		if err = e.store.Update(ctx, exec); err != nil {
+		if err = e.updateWithRetry(ctx, exec); err != nil {
+			e.markFailedBestEffort(exec, "", err.Error())
 			return nil, fmt.Errorf("persist COMPLETED: %w", err)
 		}
 		return exec, nil
 	}
 
 	exec.Status = saga.SagaStatusCompensating
-	if err = e.store.Update(ctx, exec); err != nil {
+	if err = e.updateWithRetry(ctx, exec); err != nil {
+		e.markFailedBestEffort(exec, exec.FailedStep, err.Error())
 		return nil, fmt.Errorf("persist COMPENSATING: %w", err)
 	}
 
@@ -130,7 +194,8 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 		}
 
 		step.Status = saga.StepStatusCompensating
-		if err = e.store.Update(ctx, exec); err != nil {
+		if err = e.updateWithRetry(ctx, exec); err != nil {
+			e.markFailedBestEffort(exec, step.Name, err.Error())
 			return nil, fmt.Errorf("persist step COMPENSATING: %w", err)
 		}
 
@@ -146,7 +211,8 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 			step.Status = saga.StepStatusCompensated
 		}
 
-		if err = e.store.Update(ctx, exec); err != nil {
+		if err = e.updateWithRetry(ctx, exec); err != nil {
+			e.markFailedBestEffort(exec, step.Name, err.Error())
 			return nil, fmt.Errorf("persist compensation result: %w", err)
 		}
 	}
@@ -154,7 +220,8 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 	failed := time.Now().UTC()
 	exec.Status = saga.SagaStatusFailed
 	exec.CompletedAt = &failed
-	if err = e.store.Update(ctx, exec); err != nil {
+	if err = e.updateWithRetry(ctx, exec); err != nil {
+		e.markFailedBestEffort(exec, exec.FailedStep, err.Error())
 		return nil, fmt.Errorf("persist FAILED: %w", err)
 	}
 

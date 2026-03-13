@@ -50,7 +50,9 @@ func run() error {
 
 	srv := server.New(s, eng)
 
+	handlerTimeout := time.Duration(cfg.grpcHandlerTimeoutSecs) * time.Second
 	grpcServer := grpc.NewServer(
+		grpc.ChainUnaryInterceptor(server.TimeoutInterceptor(handlerTimeout)),
 		grpc.MaxRecvMsgSize(cfg.grpcMaxRecvMB*1024*1024),
 		grpc.MaxSendMsgSize(cfg.grpcMaxSendMB*1024*1024),
 		grpc.KeepaliveParams(keepalive.ServerParameters{

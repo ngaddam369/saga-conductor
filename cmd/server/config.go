@@ -22,6 +22,9 @@ type config struct {
 	healthReadTimeoutSecs  int
 	healthWriteTimeoutSecs int
 	healthIdleTimeoutSecs  int
+
+	// gRPC handler timeout (applied to all RPCs except StartSaga).
+	grpcHandlerTimeoutSecs int
 }
 
 func loadConfig() config {
@@ -40,6 +43,8 @@ func loadConfig() config {
 		healthReadTimeoutSecs:  getEnvInt("HEALTH_READ_TIMEOUT_SECONDS", 5),
 		healthWriteTimeoutSecs: getEnvInt("HEALTH_WRITE_TIMEOUT_SECONDS", 5),
 		healthIdleTimeoutSecs:  getEnvInt("HEALTH_IDLE_TIMEOUT_SECONDS", 60),
+
+		grpcHandlerTimeoutSecs: getEnvInt("GRPC_HANDLER_TIMEOUT_SECONDS", 60),
 	}
 }
 

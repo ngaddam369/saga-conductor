@@ -150,6 +150,231 @@ func (e *Engine) markFailedBestEffort(exec *saga.Execution, step, cause string) 
 	}
 }
 
+// Resume re-drives a saga that was left in RUNNING or COMPENSATING state after
+// a process crash. Unlike Start(), it does not require the saga to be PENDING
+// and skips steps that already reached a terminal state in the previous run.
+//
+// Steps in RUNNING state (crashed mid-HTTP call) are retried from scratch;
+// steps in SUCCEEDED state are skipped; steps in COMPENSATING state
+// (crashed mid-compensation) have their compensation call retried.
+//
+// If the saga is already in a terminal state (COMPLETED or FAILED), Resume is
+// a no-op and returns the current execution without touching the store.
+func (e *Engine) Resume(ctx context.Context, id string) (*saga.Execution, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("context already done: %w", err)
+	}
+
+	exec, err := e.store.Get(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("get saga: %w", err)
+	}
+
+	switch exec.Status {
+	case saga.SagaStatusCompleted, saga.SagaStatusFailed:
+		return exec, nil // already terminal — nothing to do
+	case saga.SagaStatusRunning, saga.SagaStatusCompensating:
+		// handled below
+	default:
+		return nil, fmt.Errorf("saga %s: cannot resume from status %s", id, exec.Status)
+	}
+
+	if len(exec.Steps) != len(exec.StepDefs) {
+		return nil, fmt.Errorf("saga %s: corrupted — Steps length %d != StepDefs length %d",
+			id, len(exec.Steps), len(exec.StepDefs))
+	}
+
+	sagaCtx := ctx
+	var sagaCancel context.CancelFunc
+	if e.sagaTimeoutSecs > 0 {
+		sagaCtx, sagaCancel = context.WithTimeout(ctx, time.Duration(e.sagaTimeoutSecs)*time.Second)
+		defer sagaCancel()
+	}
+
+	failedIdx := -1
+
+	if exec.Status == saga.SagaStatusRunning {
+		for i := range exec.Steps {
+			step := &exec.Steps[i]
+			def := exec.StepDefs[i]
+
+			switch step.Status {
+			case saga.StepStatusSucceeded:
+				continue // already committed — skip
+			case saga.StepStatusFailed:
+				// Crashed after persisting step FAILED but before transitioning
+				// saga to COMPENSATING. Proceed directly to compensation.
+				failedIdx = i
+				goto compensate
+			}
+
+			// Step is PENDING or RUNNING (crashed mid-HTTP).
+			if step.Status == saga.StepStatusPending {
+				t := time.Now().UTC()
+				if err = saga.ValidateStepTransition(step.Status, saga.StepStatusRunning); err != nil {
+					return nil, fmt.Errorf("state machine: %w", err)
+				}
+				step.Status = saga.StepStatusRunning
+				step.StartedAt = &t
+				if err = e.updateWithRetry(sagaCtx, exec); err != nil {
+					e.markFailedBestEffort(exec, step.Name, err.Error())
+					return nil, fmt.Errorf("persist step RUNNING: %w", err)
+				}
+			}
+			// For RUNNING: the step is already marked running; just retry HTTP.
+
+			var stepDetail *saga.StepError
+			stepDetail, err = e.callHTTPWithRetry(sagaCtx, def.ForwardURL, exec.Payload, def)
+
+			t := time.Now().UTC()
+			step.CompletedAt = &t
+
+			if err != nil {
+				if verr := saga.ValidateStepTransition(step.Status, saga.StepStatusFailed); verr != nil {
+					return nil, fmt.Errorf("state machine: %w", verr)
+				}
+				step.Status = saga.StepStatusFailed
+				step.Error = err.Error()
+				step.ErrorDetail = stepDetail
+				exec.FailedStep = step.Name
+				if uerr := e.updateWithRetry(sagaCtx, exec); uerr != nil {
+					e.markFailedBestEffort(exec, step.Name, uerr.Error())
+					return nil, fmt.Errorf("persist step FAILED: %w", uerr)
+				}
+				failedIdx = i
+				break
+			}
+
+			if verr := saga.ValidateStepTransition(step.Status, saga.StepStatusSucceeded); verr != nil {
+				return nil, fmt.Errorf("state machine: %w", verr)
+			}
+			step.Status = saga.StepStatusSucceeded
+			if err = e.updateWithRetry(sagaCtx, exec); err != nil {
+				e.markFailedBestEffort(exec, step.Name, err.Error())
+				return nil, fmt.Errorf("persist step SUCCEEDED: %w", err)
+			}
+		}
+
+		if failedIdx == -1 {
+			// All steps succeeded.
+			completed := time.Now().UTC()
+			if err = saga.ValidateTransition(exec.Status, saga.SagaStatusCompleted); err != nil {
+				return nil, fmt.Errorf("state machine: %w", err)
+			}
+			exec.Status = saga.SagaStatusCompleted
+			exec.CompletedAt = &completed
+			if err = e.updateWithRetry(sagaCtx, exec); err != nil {
+				e.markFailedBestEffort(exec, "", err.Error())
+				return nil, fmt.Errorf("persist COMPLETED: %w", err)
+			}
+			return exec, nil
+		}
+	}
+
+compensate:
+	compCtx := sagaCtx
+	if sagaCtx.Err() != nil && ctx.Err() == nil {
+		compCtx = context.Background()
+	}
+
+	if exec.Status == saga.SagaStatusRunning {
+		// Transition to COMPENSATING (was RUNNING when we found the failed step).
+		if err = saga.ValidateTransition(exec.Status, saga.SagaStatusCompensating); err != nil {
+			return nil, fmt.Errorf("state machine: %w", err)
+		}
+		exec.Status = saga.SagaStatusCompensating
+		if err = e.updateWithRetry(compCtx, exec); err != nil {
+			e.markFailedBestEffort(exec, exec.FailedStep, err.Error())
+			return nil, fmt.Errorf("persist COMPENSATING: %w", err)
+		}
+	}
+	// else exec.Status is already COMPENSATING (loaded from store in that state).
+
+	// Determine where to begin the compensation sweep. Prefer failedIdx when we
+	// just ran the forward pass; otherwise locate the FAILED step by name.
+	startFrom := failedIdx
+	if startFrom == -1 {
+		for i, step := range exec.Steps {
+			if step.Status == saga.StepStatusFailed {
+				startFrom = i
+				break
+			}
+		}
+	}
+	if startFrom == -1 {
+		startFrom = len(exec.Steps)
+	}
+
+	for i := startFrom - 1; i >= 0; i-- {
+		step := &exec.Steps[i]
+		def := exec.StepDefs[i]
+
+		// Skip steps that already reached a terminal compensation state.
+		if step.Status == saga.StepStatusCompensated ||
+			step.Status == saga.StepStatusCompensationFailed {
+			continue
+		}
+		// Skip steps that were never executed (should not normally occur, but
+		// guards against unexpected store state).
+		if step.Status != saga.StepStatusSucceeded &&
+			step.Status != saga.StepStatusCompensating {
+			continue
+		}
+
+		if step.Status == saga.StepStatusSucceeded {
+			if verr := saga.ValidateStepTransition(step.Status, saga.StepStatusCompensating); verr != nil {
+				return nil, fmt.Errorf("state machine: %w", verr)
+			}
+			step.Status = saga.StepStatusCompensating
+			if err = e.updateWithRetry(compCtx, exec); err != nil {
+				e.markFailedBestEffort(exec, step.Name, err.Error())
+				return nil, fmt.Errorf("persist step COMPENSATING: %w", err)
+			}
+		}
+		// For COMPENSATING: already marked; just retry the HTTP call.
+
+		compDetail, compErr := e.callHTTPWithRetry(compCtx, def.CompensateURL, exec.Payload, def)
+
+		t := time.Now().UTC()
+		step.CompletedAt = &t
+
+		if compErr != nil {
+			if verr := saga.ValidateStepTransition(step.Status, saga.StepStatusCompensationFailed); verr != nil {
+				return nil, fmt.Errorf("state machine: %w", verr)
+			}
+			step.Status = saga.StepStatusCompensationFailed
+			step.Error = fmt.Sprintf("compensation failed: %s", compErr)
+			step.ErrorDetail = compDetail
+		} else {
+			if verr := saga.ValidateStepTransition(step.Status, saga.StepStatusCompensated); verr != nil {
+				return nil, fmt.Errorf("state machine: %w", verr)
+			}
+			step.Status = saga.StepStatusCompensated
+		}
+
+		if err = e.updateWithRetry(compCtx, exec); err != nil {
+			e.markFailedBestEffort(exec, step.Name, err.Error())
+			return nil, fmt.Errorf("persist compensation result: %w", err)
+		}
+	}
+
+	failed := time.Now().UTC()
+	if err = saga.ValidateTransition(exec.Status, saga.SagaStatusFailed); err != nil {
+		return nil, fmt.Errorf("state machine: %w", err)
+	}
+	exec.Status = saga.SagaStatusFailed
+	exec.CompletedAt = &failed
+	if err = e.updateWithRetry(compCtx, exec); err != nil {
+		e.markFailedBestEffort(exec, exec.FailedStep, err.Error())
+		return nil, fmt.Errorf("persist FAILED: %w", err)
+	}
+
+	if sagaCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+		return exec, fmt.Errorf("saga timed out after %ds: %w", e.sagaTimeoutSecs, context.DeadlineExceeded)
+	}
+	return exec, nil
+}
+
 // Start transitions a PENDING saga to RUNNING and executes all steps in order.
 // If any step fails, compensation runs automatically in reverse for all
 // previously succeeded steps. Start blocks until the saga reaches a terminal

@@ -874,3 +874,187 @@ func TestEngine(t *testing.T) {
 		}
 	})
 }
+
+func TestEngineResume(t *testing.T) {
+	t.Parallel()
+
+	// seedRunning writes a saga directly into the store in RUNNING state with
+	// some steps already in the given statuses, simulating a mid-run crash.
+	seedRunning := func(t *testing.T, s *store.BoltStore, defs []saga.StepDefinition, stepStatuses []saga.StepStatus) {
+		t.Helper()
+		steps := make([]saga.StepExecution, len(defs))
+		for i, d := range defs {
+			steps[i] = saga.StepExecution{Name: d.Name, Status: stepStatuses[i]}
+		}
+		exec := &saga.Execution{
+			ID:        "saga-1",
+			Name:      "resume-saga",
+			Status:    saga.SagaStatusRunning,
+			StepDefs:  defs,
+			Steps:     steps,
+			Payload:   []byte(`{}`),
+			CreatedAt: time.Now().UTC(),
+		}
+		if err := s.Create(context.Background(), exec); err != nil {
+			t.Fatalf("seedRunning Create: %v", err)
+		}
+	}
+
+	t.Run("TerminalIsNoop", func(t *testing.T) {
+		t.Parallel()
+		eng, s := newEngine(t)
+		ok, _ := stepServer(t, http.StatusOK)
+		seedSaga(t, s, []saga.StepDefinition{
+			{Name: "s1", ForwardURL: ok.URL, CompensateURL: ok.URL},
+		})
+		if _, err := eng.Start(context.Background(), "saga-1"); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		exec, err := eng.Resume(context.Background(), "saga-1")
+		if err != nil {
+			t.Fatalf("Resume on terminal saga: %v", err)
+		}
+		if exec.Status != saga.SagaStatusCompleted {
+			t.Errorf("Status: got %s, want COMPLETED", exec.Status)
+		}
+	})
+
+	t.Run("ResumeRunning", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("SkipsSucceeded_CompletesRemaining", func(t *testing.T) {
+			t.Parallel()
+			_, s := newEngine(t)
+			ok, callCount := stepServer(t, http.StatusOK)
+			defs := []saga.StepDefinition{
+				{Name: "s1", ForwardURL: ok.URL, CompensateURL: ok.URL},
+				{Name: "s2", ForwardURL: ok.URL, CompensateURL: ok.URL},
+			}
+			// s1 already SUCCEEDED, s2 still PENDING — simulate crash after s1.
+			seedRunning(t, s, defs, []saga.StepStatus{
+				saga.StepStatusSucceeded,
+				saga.StepStatusPending,
+			})
+
+			eng := engine.New(s, engine.WithRetryBackoff(time.Millisecond), engine.WithDefaultMaxRetries(0))
+			exec, err := eng.Resume(context.Background(), "saga-1")
+			if err != nil {
+				t.Fatalf("Resume: %v", err)
+			}
+			if exec.Status != saga.SagaStatusCompleted {
+				t.Errorf("Status: got %s, want COMPLETED", exec.Status)
+			}
+			// s1 must not be re-executed; only s2's forward URL is called.
+			if *callCount != 1 {
+				t.Errorf("forward calls: got %d, want 1 (s1 must not be re-executed)", *callCount)
+			}
+		})
+
+		t.Run("CrashedMidHTTP_Retries", func(t *testing.T) {
+			t.Parallel()
+			_, s := newEngine(t)
+			ok, callCount := stepServer(t, http.StatusOK)
+			defs := []saga.StepDefinition{
+				{Name: "s1", ForwardURL: ok.URL, CompensateURL: ok.URL},
+			}
+			// s1 marked RUNNING but HTTP response never arrived before crash.
+			seedRunning(t, s, defs, []saga.StepStatus{saga.StepStatusRunning})
+
+			eng := engine.New(s, engine.WithRetryBackoff(time.Millisecond), engine.WithDefaultMaxRetries(0))
+			exec, err := eng.Resume(context.Background(), "saga-1")
+			if err != nil {
+				t.Fatalf("Resume: %v", err)
+			}
+			if exec.Status != saga.SagaStatusCompleted {
+				t.Errorf("Status: got %s, want COMPLETED", exec.Status)
+			}
+			if *callCount != 1 {
+				t.Errorf("forward calls: got %d, want 1", *callCount)
+			}
+		})
+	})
+
+	t.Run("ResumeCompensating", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("SkipsCompensated_RetriesToRemaining", func(t *testing.T) {
+			t.Parallel()
+			_, s := newEngine(t)
+			comp, compCalls := stepServer(t, http.StatusOK)
+			defs := []saga.StepDefinition{
+				{Name: "s1", ForwardURL: comp.URL, CompensateURL: comp.URL},
+				{Name: "s2", ForwardURL: comp.URL, CompensateURL: comp.URL},
+			}
+			// s2 failed, s1 already COMPENSATED — simulate crash mid-compensation.
+			steps := []saga.StepExecution{
+				{Name: "s1", Status: saga.StepStatusCompensated},
+				{Name: "s2", Status: saga.StepStatusFailed},
+			}
+			exec := &saga.Execution{
+				ID: "saga-1", Name: "resume-comp",
+				Status:     saga.SagaStatusCompensating,
+				StepDefs:   defs,
+				Steps:      steps,
+				FailedStep: "s2",
+				Payload:    []byte(`{}`),
+				CreatedAt:  time.Now().UTC(),
+			}
+			if err := s.Create(context.Background(), exec); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+
+			eng := engine.New(s, engine.WithRetryBackoff(time.Millisecond), engine.WithDefaultMaxRetries(0))
+			got, err := eng.Resume(context.Background(), "saga-1")
+			if err != nil {
+				t.Fatalf("Resume: %v", err)
+			}
+			if got.Status != saga.SagaStatusFailed {
+				t.Errorf("Status: got %s, want FAILED", got.Status)
+			}
+			// s1 was already COMPENSATED — its compensate URL must not be called again.
+			if *compCalls != 0 {
+				t.Errorf("comp calls: got %d, want 0 (s1 already compensated)", *compCalls)
+			}
+		})
+
+		t.Run("CrashedMidCompensation_Retries", func(t *testing.T) {
+			t.Parallel()
+			_, s := newEngine(t)
+			comp, compCalls := stepServer(t, http.StatusOK)
+			defs := []saga.StepDefinition{
+				{Name: "s1", ForwardURL: comp.URL, CompensateURL: comp.URL},
+				{Name: "s2", ForwardURL: comp.URL, CompensateURL: comp.URL},
+			}
+			// s2 failed, s1 was marked COMPENSATING but HTTP call didn't finish.
+			steps := []saga.StepExecution{
+				{Name: "s1", Status: saga.StepStatusCompensating},
+				{Name: "s2", Status: saga.StepStatusFailed},
+			}
+			exec := &saga.Execution{
+				ID: "saga-1", Name: "resume-comp-mid",
+				Status:     saga.SagaStatusCompensating,
+				StepDefs:   defs,
+				Steps:      steps,
+				FailedStep: "s2",
+				Payload:    []byte(`{}`),
+				CreatedAt:  time.Now().UTC(),
+			}
+			if err := s.Create(context.Background(), exec); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+
+			eng := engine.New(s, engine.WithRetryBackoff(time.Millisecond), engine.WithDefaultMaxRetries(0))
+			got, err := eng.Resume(context.Background(), "saga-1")
+			if err != nil {
+				t.Fatalf("Resume: %v", err)
+			}
+			if got.Status != saga.SagaStatusFailed {
+				t.Errorf("Status: got %s, want FAILED", got.Status)
+			}
+			// s1 was COMPENSATING — its compensate URL must be retried once.
+			if *compCalls != 1 {
+				t.Errorf("comp calls: got %d, want 1 (s1 compensation must be retried)", *compCalls)
+			}
+		})
+	})
+}

@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/keepalive"
 
 	"github.com/ngaddam369/saga-conductor/internal/engine"
+	"github.com/ngaddam369/saga-conductor/internal/scheduler"
 	"github.com/ngaddam369/saga-conductor/internal/server"
 	"github.com/ngaddam369/saga-conductor/internal/store"
 	pb "github.com/ngaddam369/saga-conductor/proto/saga/v1"
@@ -40,6 +41,12 @@ func run() error {
 	}()
 
 	eng := engine.New(s)
+
+	// Resume any sagas left in RUNNING or COMPENSATING state by a previous crash.
+	if err = scheduler.New(s, eng).Run(context.Background()); err != nil {
+		return fmt.Errorf("scheduler: %w", err)
+	}
+
 	srv := server.New(s, eng)
 
 	grpcServer := grpc.NewServer(

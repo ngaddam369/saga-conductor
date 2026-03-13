@@ -187,6 +187,9 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 		def := exec.StepDefs[i]
 
 		t := time.Now().UTC()
+		if err = saga.ValidateStepTransition(step.Status, saga.StepStatusRunning); err != nil {
+			return nil, fmt.Errorf("state machine: %w", err)
+		}
 		step.Status = saga.StepStatusRunning
 		step.StartedAt = &t
 		if err = e.updateWithRetry(sagaCtx, exec); err != nil {
@@ -201,6 +204,9 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 		step.CompletedAt = &t
 
 		if err != nil {
+			if verr := saga.ValidateStepTransition(step.Status, saga.StepStatusFailed); verr != nil {
+				return nil, fmt.Errorf("state machine: %w", verr)
+			}
 			step.Status = saga.StepStatusFailed
 			step.Error = err.Error()
 			step.ErrorDetail = stepDetail
@@ -213,6 +219,9 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 			break
 		}
 
+		if err = saga.ValidateStepTransition(step.Status, saga.StepStatusSucceeded); err != nil {
+			return nil, fmt.Errorf("state machine: %w", err)
+		}
 		step.Status = saga.StepStatusSucceeded
 		if err = e.updateWithRetry(sagaCtx, exec); err != nil {
 			e.markFailedBestEffort(exec, step.Name, err.Error())
@@ -222,6 +231,9 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 
 	if failedIdx == -1 {
 		completed := time.Now().UTC()
+		if err = saga.ValidateTransition(exec.Status, saga.SagaStatusCompleted); err != nil {
+			return nil, fmt.Errorf("state machine: %w", err)
+		}
 		exec.Status = saga.SagaStatusCompleted
 		exec.CompletedAt = &completed
 		if err = e.updateWithRetry(sagaCtx, exec); err != nil {
@@ -239,6 +251,9 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 		compCtx = context.Background()
 	}
 
+	if err = saga.ValidateTransition(exec.Status, saga.SagaStatusCompensating); err != nil {
+		return nil, fmt.Errorf("state machine: %w", err)
+	}
 	exec.Status = saga.SagaStatusCompensating
 	if err = e.updateWithRetry(compCtx, exec); err != nil {
 		e.markFailedBestEffort(exec, exec.FailedStep, err.Error())
@@ -253,6 +268,9 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 			continue
 		}
 
+		if err = saga.ValidateStepTransition(step.Status, saga.StepStatusCompensating); err != nil {
+			return nil, fmt.Errorf("state machine: %w", err)
+		}
 		step.Status = saga.StepStatusCompensating
 		if err = e.updateWithRetry(compCtx, exec); err != nil {
 			e.markFailedBestEffort(exec, step.Name, err.Error())
@@ -265,10 +283,16 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 		step.CompletedAt = &t
 
 		if compErr != nil {
+			if verr := saga.ValidateStepTransition(step.Status, saga.StepStatusCompensationFailed); verr != nil {
+				return nil, fmt.Errorf("state machine: %w", verr)
+			}
 			step.Status = saga.StepStatusCompensationFailed
 			step.Error = fmt.Sprintf("compensation failed: %s", compErr)
 			step.ErrorDetail = compDetail
 		} else {
+			if verr := saga.ValidateStepTransition(step.Status, saga.StepStatusCompensated); verr != nil {
+				return nil, fmt.Errorf("state machine: %w", verr)
+			}
 			step.Status = saga.StepStatusCompensated
 		}
 
@@ -279,6 +303,9 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 	}
 
 	failed := time.Now().UTC()
+	if err = saga.ValidateTransition(exec.Status, saga.SagaStatusFailed); err != nil {
+		return nil, fmt.Errorf("state machine: %w", err)
+	}
 	exec.Status = saga.SagaStatusFailed
 	exec.CompletedAt = &failed
 	if err = e.updateWithRetry(compCtx, exec); err != nil {

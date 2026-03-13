@@ -53,6 +53,7 @@ type Engine struct {
 	retryBackoff       time.Duration
 	defaultMaxRetries  int
 	defaultRetryBaseMs int
+	sagaTimeoutSecs    int
 }
 
 // New returns an Engine backed by the given store.
@@ -83,12 +84,20 @@ func New(s store.Store, opts ...Option) *Engine {
 		}
 	}
 
+	sagaTimeoutSecs := 3600
+	if v := os.Getenv("SAGA_TIMEOUT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			sagaTimeoutSecs = n
+		}
+	}
+
 	eng := &Engine{
 		store:              s,
 		defaultTimeout:     timeout,
 		retryBackoff:       defaultRetryBackoff,
 		defaultMaxRetries:  maxRetries,
 		defaultRetryBaseMs: retryBaseMs,
+		sagaTimeoutSecs:    sagaTimeoutSecs,
 		httpClient: &http.Client{
 			Transport: transport,
 			// Never follow redirects — a 3xx to file:// or an internal service
@@ -145,6 +154,11 @@ func (e *Engine) markFailedBestEffort(exec *saga.Execution, step, cause string) 
 // If any step fails, compensation runs automatically in reverse for all
 // previously succeeded steps. Start blocks until the saga reaches a terminal
 // state (COMPLETED or FAILED) and then returns the final execution.
+//
+// If SAGA_TIMEOUT_SECONDS is configured, a saga-level deadline wraps the
+// entire forward execution. On timeout the current step fails immediately
+// via context cancellation, then compensation runs on a fresh context so
+// previously succeeded steps can still be rolled back.
 func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("context already done: %w", err)
@@ -158,6 +172,15 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 		return nil, fmt.Errorf("saga %s: corrupted — Steps length %d != StepDefs length %d", id, len(exec.Steps), len(exec.StepDefs))
 	}
 
+	// Derive a saga-scoped deadline for forward execution. This caps total saga
+	// duration independently of per-step timeouts (STEP_TIMEOUT_SECONDS).
+	sagaCtx := ctx
+	var sagaCancel context.CancelFunc
+	if e.sagaTimeoutSecs > 0 {
+		sagaCtx, sagaCancel = context.WithTimeout(ctx, time.Duration(e.sagaTimeoutSecs)*time.Second)
+		defer sagaCancel()
+	}
+
 	failedIdx := -1
 	for i := range exec.Steps {
 		step := &exec.Steps[i]
@@ -166,12 +189,12 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 		t := time.Now().UTC()
 		step.Status = saga.StepStatusRunning
 		step.StartedAt = &t
-		if err = e.updateWithRetry(ctx, exec); err != nil {
+		if err = e.updateWithRetry(sagaCtx, exec); err != nil {
 			e.markFailedBestEffort(exec, step.Name, err.Error())
 			return nil, fmt.Errorf("persist step RUNNING: %w", err)
 		}
 
-		err = e.callHTTPWithRetry(ctx, def.ForwardURL, exec.Payload, def)
+		err = e.callHTTPWithRetry(sagaCtx, def.ForwardURL, exec.Payload, def)
 
 		t = time.Now().UTC()
 		step.CompletedAt = &t
@@ -180,7 +203,7 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 			step.Status = saga.StepStatusFailed
 			step.Error = err.Error()
 			exec.FailedStep = step.Name
-			if uerr := e.updateWithRetry(ctx, exec); uerr != nil {
+			if uerr := e.updateWithRetry(sagaCtx, exec); uerr != nil {
 				e.markFailedBestEffort(exec, step.Name, uerr.Error())
 				return nil, fmt.Errorf("persist step FAILED: %w", uerr)
 			}
@@ -189,7 +212,7 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 		}
 
 		step.Status = saga.StepStatusSucceeded
-		if err = e.updateWithRetry(ctx, exec); err != nil {
+		if err = e.updateWithRetry(sagaCtx, exec); err != nil {
 			e.markFailedBestEffort(exec, step.Name, err.Error())
 			return nil, fmt.Errorf("persist step SUCCEEDED: %w", err)
 		}
@@ -199,15 +222,23 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 		completed := time.Now().UTC()
 		exec.Status = saga.SagaStatusCompleted
 		exec.CompletedAt = &completed
-		if err = e.updateWithRetry(ctx, exec); err != nil {
+		if err = e.updateWithRetry(sagaCtx, exec); err != nil {
 			e.markFailedBestEffort(exec, "", err.Error())
 			return nil, fmt.Errorf("persist COMPLETED: %w", err)
 		}
 		return exec, nil
 	}
 
+	// If the saga deadline fired but the caller's context is still alive,
+	// switch to a fresh context for compensation so previously succeeded steps
+	// can still be rolled back even though the saga timeout has expired.
+	compCtx := sagaCtx
+	if sagaCtx.Err() != nil && ctx.Err() == nil {
+		compCtx = context.Background()
+	}
+
 	exec.Status = saga.SagaStatusCompensating
-	if err = e.updateWithRetry(ctx, exec); err != nil {
+	if err = e.updateWithRetry(compCtx, exec); err != nil {
 		e.markFailedBestEffort(exec, exec.FailedStep, err.Error())
 		return nil, fmt.Errorf("persist COMPENSATING: %w", err)
 	}
@@ -221,12 +252,12 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 		}
 
 		step.Status = saga.StepStatusCompensating
-		if err = e.updateWithRetry(ctx, exec); err != nil {
+		if err = e.updateWithRetry(compCtx, exec); err != nil {
 			e.markFailedBestEffort(exec, step.Name, err.Error())
 			return nil, fmt.Errorf("persist step COMPENSATING: %w", err)
 		}
 
-		err = e.callHTTPWithRetry(ctx, def.CompensateURL, exec.Payload, def)
+		err = e.callHTTPWithRetry(compCtx, def.CompensateURL, exec.Payload, def)
 
 		t := time.Now().UTC()
 		step.CompletedAt = &t
@@ -238,7 +269,7 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 			step.Status = saga.StepStatusCompensated
 		}
 
-		if err = e.updateWithRetry(ctx, exec); err != nil {
+		if err = e.updateWithRetry(compCtx, exec); err != nil {
 			e.markFailedBestEffort(exec, step.Name, err.Error())
 			return nil, fmt.Errorf("persist compensation result: %w", err)
 		}
@@ -247,11 +278,16 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 	failed := time.Now().UTC()
 	exec.Status = saga.SagaStatusFailed
 	exec.CompletedAt = &failed
-	if err = e.updateWithRetry(ctx, exec); err != nil {
+	if err = e.updateWithRetry(compCtx, exec); err != nil {
 		e.markFailedBestEffort(exec, exec.FailedStep, err.Error())
 		return nil, fmt.Errorf("persist FAILED: %w", err)
 	}
 
+	// If the saga's own deadline fired (not the caller's context), return a
+	// typed error so the gRPC server maps it to codes.DeadlineExceeded.
+	if sagaCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+		return exec, fmt.Errorf("saga timed out after %ds: %w", e.sagaTimeoutSecs, context.DeadlineExceeded)
+	}
 	return exec, nil
 }
 

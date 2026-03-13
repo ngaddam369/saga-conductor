@@ -666,4 +666,96 @@ func TestEngine(t *testing.T) {
 			t.Errorf("step-1 Status: got %q, want SUCCEEDED", got.Steps[0].Status)
 		}
 	})
+
+	t.Run("SagaTimeout", func(t *testing.T) {
+		// SAGA_TIMEOUT_SECONDS=1 must abort a hanging step within ~1s and mark
+		// the saga FAILED. The error returned must wrap context.DeadlineExceeded.
+		done := make(chan struct{})
+		hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			<-done
+		}))
+		t.Cleanup(func() { close(done); hang.Close() })
+
+		t.Setenv("SAGA_TIMEOUT_SECONDS", "1")
+		t.Setenv("STEP_TIMEOUT_SECONDS", "30") // per-step timeout larger than saga timeout
+		t.Setenv("STEP_MAX_RETRIES", "0")
+		s, err := store.NewBoltStore(filepath.Join(t.TempDir(), "saga-timeout.db"))
+		if err != nil {
+			t.Fatalf("NewBoltStore: %v", err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		eng := engine.New(s, engine.WithRetryBackoff(time.Millisecond))
+
+		seedSaga(t, s, []saga.StepDefinition{
+			{Name: "step-1", ForwardURL: hang.URL, CompensateURL: hang.URL},
+		})
+
+		start := time.Now()
+		exec, startErr := eng.Start(context.Background(), "saga-1")
+		elapsed := time.Since(start)
+
+		if !errors.Is(startErr, context.DeadlineExceeded) {
+			t.Errorf("Start error: got %v, want wrapping context.DeadlineExceeded", startErr)
+		}
+		if exec == nil || exec.Status != saga.SagaStatusFailed {
+			t.Errorf("Status: got %v, want FAILED", exec)
+		}
+		if elapsed > 3*time.Second {
+			t.Errorf("took %v; expected saga timeout of 1s to abort quickly", elapsed)
+		}
+	})
+
+	t.Run("SagaTimeoutCompensationRuns", func(t *testing.T) {
+		// When the saga deadline fires during step-2, compensation for the
+		// already-succeeded step-1 must still be attempted using a fresh context.
+		var compCalls int
+		compSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			compCalls++
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(compSrv.Close)
+
+		fwdOK := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(fwdOK.Close)
+
+		done := make(chan struct{})
+		hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			<-done
+		}))
+		t.Cleanup(func() { close(done); hang.Close() })
+
+		t.Setenv("SAGA_TIMEOUT_SECONDS", "1")
+		t.Setenv("STEP_TIMEOUT_SECONDS", "30")
+		t.Setenv("STEP_MAX_RETRIES", "0")
+		s, err := store.NewBoltStore(filepath.Join(t.TempDir(), "saga-timeout-comp.db"))
+		if err != nil {
+			t.Fatalf("NewBoltStore: %v", err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		eng := engine.New(s, engine.WithRetryBackoff(time.Millisecond))
+
+		seedSaga(t, s, []saga.StepDefinition{
+			{Name: "step-1", ForwardURL: fwdOK.URL, CompensateURL: compSrv.URL},
+			{Name: "step-2", ForwardURL: hang.URL, CompensateURL: compSrv.URL},
+		})
+
+		start := time.Now()
+		exec, startErr := eng.Start(context.Background(), "saga-1")
+		elapsed := time.Since(start)
+
+		if !errors.Is(startErr, context.DeadlineExceeded) {
+			t.Errorf("Start error: got %v, want wrapping context.DeadlineExceeded", startErr)
+		}
+		if exec == nil || exec.Status != saga.SagaStatusFailed {
+			t.Errorf("Status: got %v, want FAILED", exec)
+		}
+		if compCalls != 1 {
+			t.Errorf("compensation calls: got %d, want 1 (step-1 should be compensated)", compCalls)
+		}
+		if elapsed > 3*time.Second {
+			t.Errorf("took %v; expected saga timeout of 1s to abort quickly", elapsed)
+		}
+	})
 }

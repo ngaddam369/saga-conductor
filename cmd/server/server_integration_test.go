@@ -494,6 +494,53 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("SagaTimeout", func(t *testing.T) {
+		// SAGA_TIMEOUT_SECONDS=1 must abort a hanging step and surface as
+		// codes.DeadlineExceeded on the gRPC caller. The saga must be FAILED.
+		t.Setenv("SAGA_TIMEOUT_SECONDS", "1")
+		t.Setenv("STEP_TIMEOUT_SECONDS", "30")
+		t.Setenv("STEP_MAX_RETRIES", "0")
+
+		done := make(chan struct{})
+		hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			<-done
+		}))
+		t.Cleanup(func() { close(done); hang.Close() })
+
+		cfg := defaultTestConfig()
+		client := productionGRPCServer(t, cfg)
+		ctx := context.Background()
+
+		created, err := client.CreateSaga(ctx, &pb.CreateSagaRequest{
+			Name: "timeout-saga",
+			Steps: []*pb.StepDefinition{
+				{Name: "step-1", ForwardUrl: hang.URL, CompensateUrl: hang.URL},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateSaga: %v", err)
+		}
+
+		start := time.Now()
+		_, startErr := client.StartSaga(ctx, &pb.StartSagaRequest{SagaId: created.Saga.Id})
+		elapsed := time.Since(start)
+
+		if st, ok := status.FromError(startErr); !ok || st.Code() != codes.DeadlineExceeded {
+			t.Errorf("StartSaga error code: got %v, want DeadlineExceeded", startErr)
+		}
+		if elapsed > 5*time.Second {
+			t.Errorf("took %v; expected saga timeout of 1s to abort quickly", elapsed)
+		}
+
+		got, err := client.GetSaga(ctx, &pb.GetSagaRequest{SagaId: created.Saga.Id})
+		if err != nil {
+			t.Fatalf("GetSaga: %v", err)
+		}
+		if got.Saga.Status != pb.SagaStatus_SAGA_STATUS_FAILED {
+			t.Errorf("saga status: got %v, want FAILED", got.Saga.Status)
+		}
+	})
+
 	t.Run("HealthReadTimeout", func(t *testing.T) {
 		// A client that opens a connection and never sends headers must be
 		// dropped by the server's ReadTimeout, not held open indefinitely.

@@ -432,6 +432,37 @@ func TestBoltStore(t *testing.T) {
 		}
 	})
 
+	t.Run("Delete", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("removes existing saga", func(t *testing.T) {
+			t.Parallel()
+			s := newTestStore(t)
+			ctx := context.Background()
+
+			exec := newExec("del-1", "saga", saga.SagaStatusCompleted)
+			if err := s.Create(ctx, exec); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+
+			if err := s.Delete(ctx, "del-1"); err != nil {
+				t.Fatalf("Delete: %v", err)
+			}
+
+			if _, err := s.Get(ctx, "del-1"); err != store.ErrNotFound {
+				t.Errorf("Get after Delete: want ErrNotFound, got %v", err)
+			}
+		})
+
+		t.Run("returns ErrNotFound for missing saga", func(t *testing.T) {
+			t.Parallel()
+			s := newTestStore(t)
+			if err := s.Delete(context.Background(), "nonexistent"); err != store.ErrNotFound {
+				t.Errorf("want ErrNotFound, got %v", err)
+			}
+		})
+	})
+
 	t.Run("Ping", func(t *testing.T) {
 		t.Parallel()
 

@@ -168,6 +168,17 @@ func (s *BoltStore) TransitionToRunning(ctx context.Context, id string, startedA
 	return &exec, nil
 }
 
+func (s *BoltStore) Delete(_ context.Context, id string) error {
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(bucketSagas)
+		key := []byte(id)
+		if b.Get(key) == nil {
+			return ErrNotFound
+		}
+		return b.Delete(key)
+	})
+}
+
 func (s *BoltStore) Ping(_ context.Context) error {
 	return s.db.View(func(tx *bbolt.Tx) error {
 		if tx.Bucket(bucketSagas) == nil {

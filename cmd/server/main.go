@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc/keepalive"
 
 	"github.com/ngaddam369/saga-conductor/internal/engine"
+	"github.com/ngaddam369/saga-conductor/internal/purger"
 	"github.com/ngaddam369/saga-conductor/internal/scheduler"
 	"github.com/ngaddam369/saga-conductor/internal/server"
 	"github.com/ngaddam369/saga-conductor/internal/store"
@@ -47,6 +48,11 @@ func run() error {
 	if err = scheduler.New(s, eng).Run(context.Background()); err != nil {
 		return fmt.Errorf("scheduler: %w", err)
 	}
+
+	// Start background data-retention purger.
+	purgeCtx, purgeCancel := context.WithCancel(context.Background())
+	defer purgeCancel()
+	go purger.New(s).Run(purgeCtx)
 
 	srv := server.New(s, eng)
 

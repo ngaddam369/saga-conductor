@@ -31,6 +31,10 @@ type Store interface {
 	// ErrAlreadyRunning if the saga is not PENDING when the write fires.
 	TransitionToRunning(ctx context.Context, id string, startedAt time.Time) (*saga.Execution, error)
 
+	// Delete removes a saga execution by ID. Returns ErrNotFound if the ID
+	// does not exist.
+	Delete(ctx context.Context, id string) error
+
 	// Ping verifies the store is reachable and its bucket is accessible.
 	// Used by the liveness probe to detect storage failures.
 	Ping(ctx context.Context) error

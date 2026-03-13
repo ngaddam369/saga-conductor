@@ -5,7 +5,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN go build -o /bin/saga-conductor ./cmd/server
+RUN go build -ldflags="-s -w" -trimpath -o /bin/saga-conductor ./cmd/server
 
 FROM alpine:3.21
 

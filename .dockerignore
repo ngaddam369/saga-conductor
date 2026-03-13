@@ -1,0 +1,9 @@
+.git/
+bin/
+*.db
+*.out
+.env
+*.env
+.idea/
+.vscode/
+TODO.md

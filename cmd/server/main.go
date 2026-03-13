@@ -77,7 +77,13 @@ func run() error {
 	ready.Store(true)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health/live", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/health/live", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
+		defer cancel()
+		if err := s.Ping(ctx); err != nil {
+			http.Error(w, "store unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("/health/ready", func(w http.ResponseWriter, _ *http.Request) {

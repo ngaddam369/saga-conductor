@@ -70,14 +70,20 @@ func productionGRPCServer(t *testing.T, cfg config) pb.SagaOrchestratorClient {
 }
 
 // productionHealthServer starts the health HTTP server as production does
-// (with timeouts and a readiness flag) and returns its base URL.
-// Pass a ready flag initialised to true for normal operation; set it to false
-// to simulate the shutdown drain phase.
-func productionHealthServer(t *testing.T, cfg config, ready *atomic.Bool) string {
+// (with timeouts, a real store-backed liveness check, and a readiness flag)
+// and returns its base URL. Pass a ready flag initialised to true for normal
+// operation; set it to false to simulate the shutdown drain phase.
+func productionHealthServer(t *testing.T, cfg config, ready *atomic.Bool, s store.Store) string {
 	t.Helper()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health/live", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/health/live", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
+		defer cancel()
+		if err := s.Ping(ctx); err != nil {
+			http.Error(w, "store unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("/health/ready", func(w http.ResponseWriter, _ *http.Request) {
@@ -244,9 +250,14 @@ func TestIntegration(t *testing.T) {
 			},
 		}
 
+		hs, err := store.NewBoltStore(filepath.Join(t.TempDir(), "health.db"))
+		if err != nil {
+			t.Fatalf("NewBoltStore: %v", err)
+		}
+		t.Cleanup(func() { _ = hs.Close() })
 		var ready atomic.Bool
 		ready.Store(true)
-		baseURL := productionHealthServer(t, defaultTestConfig(), &ready)
+		baseURL := productionHealthServer(t, defaultTestConfig(), &ready, hs)
 
 		for _, tc := range tests {
 			t.Run(tc.name, func(t *testing.T) {
@@ -550,12 +561,62 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("LivenessCheck", func(t *testing.T) {
+		t.Run("returns 200 when store is healthy", func(t *testing.T) {
+			hs, err := store.NewBoltStore(filepath.Join(t.TempDir(), "live-ok.db"))
+			if err != nil {
+				t.Fatalf("NewBoltStore: %v", err)
+			}
+			t.Cleanup(func() { _ = hs.Close() })
+			var ready atomic.Bool
+			ready.Store(true)
+			baseURL := productionHealthServer(t, defaultTestConfig(), &ready, hs)
+
+			resp, err := http.Get(baseURL + "/health/live")
+			if err != nil {
+				t.Fatalf("GET /health/live: %v", err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Errorf("status: got %d, want 200", resp.StatusCode)
+			}
+		})
+
+		t.Run("returns 503 when store is closed", func(t *testing.T) {
+			hs, err := store.NewBoltStore(filepath.Join(t.TempDir(), "live-fail.db"))
+			if err != nil {
+				t.Fatalf("NewBoltStore: %v", err)
+			}
+			// Close the store before starting the server to simulate a storage failure.
+			if err = hs.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			var ready atomic.Bool
+			ready.Store(true)
+			baseURL := productionHealthServer(t, defaultTestConfig(), &ready, hs)
+
+			resp, err := http.Get(baseURL + "/health/live")
+			if err != nil {
+				t.Fatalf("GET /health/live: %v", err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusServiceUnavailable {
+				t.Errorf("status: got %d, want 503", resp.StatusCode)
+			}
+		})
+	})
+
 	t.Run("ReadinessDrain", func(t *testing.T) {
 		// /health/ready must return 200 while ready=true and 503 after it is
 		// flipped to false, simulating the SIGTERM drain phase.
+		hs, err := store.NewBoltStore(filepath.Join(t.TempDir(), "drain.db"))
+		if err != nil {
+			t.Fatalf("NewBoltStore: %v", err)
+		}
+		t.Cleanup(func() { _ = hs.Close() })
 		var ready atomic.Bool
 		ready.Store(true)
-		baseURL := productionHealthServer(t, defaultTestConfig(), &ready)
+		baseURL := productionHealthServer(t, defaultTestConfig(), &ready, hs)
 
 		get := func(t *testing.T, path string) int {
 			t.Helper()
@@ -585,11 +646,16 @@ func TestIntegration(t *testing.T) {
 	t.Run("HealthReadTimeout", func(t *testing.T) {
 		// A client that opens a connection and never sends headers must be
 		// dropped by the server's ReadTimeout, not held open indefinitely.
+		hs, err := store.NewBoltStore(filepath.Join(t.TempDir(), "timeout.db"))
+		if err != nil {
+			t.Fatalf("NewBoltStore: %v", err)
+		}
+		t.Cleanup(func() { _ = hs.Close() })
 		cfg := defaultTestConfig()
 		cfg.healthReadTimeoutSecs = 1
 		var ready atomic.Bool
 		ready.Store(true)
-		baseURL := productionHealthServer(t, cfg, &ready)
+		baseURL := productionHealthServer(t, cfg, &ready, hs)
 
 		// Dial raw TCP and send nothing — the server should close the
 		// connection once ReadTimeout fires.

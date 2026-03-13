@@ -168,6 +168,15 @@ func (s *BoltStore) TransitionToRunning(ctx context.Context, id string, startedA
 	return &exec, nil
 }
 
+func (s *BoltStore) Ping(_ context.Context) error {
+	return s.db.View(func(tx *bbolt.Tx) error {
+		if tx.Bucket(bucketSagas) == nil {
+			return fmt.Errorf("sagas bucket missing")
+		}
+		return nil
+	})
+}
+
 func (s *BoltStore) List(ctx context.Context, status saga.SagaStatus) ([]*saga.Execution, error) {
 	var results []*saga.Execution
 

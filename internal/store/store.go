@@ -30,4 +30,8 @@ type Store interface {
 	// writes it to RUNNING and returns the updated execution. It returns
 	// ErrAlreadyRunning if the saga is not PENDING when the write fires.
 	TransitionToRunning(ctx context.Context, id string, startedAt time.Time) (*saga.Execution, error)
+
+	// Ping verifies the store is reachable and its bucket is accessible.
+	// Used by the liveness probe to detect storage failures.
+	Ping(ctx context.Context) error
 }

@@ -431,4 +431,28 @@ func TestBoltStore(t *testing.T) {
 			t.Errorf("db file missing: %v", err)
 		}
 	})
+
+	t.Run("Ping", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("returns nil on healthy store", func(t *testing.T) {
+			t.Parallel()
+			s := newTestStore(t)
+			if err := s.Ping(context.Background()); err != nil {
+				t.Errorf("Ping: %v", err)
+			}
+		})
+
+		t.Run("returns error after close", func(t *testing.T) {
+			t.Parallel()
+			s := newTestStore(t)
+			// Close the store to simulate an inaccessible database.
+			if err := s.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			if err := s.Ping(context.Background()); err == nil {
+				t.Error("Ping: got nil, want error on closed store")
+			}
+		})
+	})
 }

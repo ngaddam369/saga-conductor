@@ -338,6 +338,66 @@ func TestBoltStore(t *testing.T) {
 		}
 	})
 
+	t.Run("ErrorDetailPersistedAndRetrieved", func(t *testing.T) {
+		// ErrorDetail on a StepExecution must round-trip through bbolt as JSON
+		// without loss — verifies the new field participates in serialisation.
+		s := newTestStore(t)
+		ctx := context.Background()
+
+		now := time.Now().UTC()
+		detail := &saga.StepError{
+			Message:        "step returned HTTP 503",
+			HTTPStatusCode: 503,
+			ResponseBody:   "service unavailable",
+			IsNetworkError: false,
+			DurationMs:     42,
+		}
+		exec := &saga.Execution{
+			ID:        "err-detail-1",
+			Name:      "detail-test",
+			Status:    saga.SagaStatusFailed,
+			CreatedAt: now,
+			Steps: []saga.StepExecution{
+				{
+					Name:        "step-1",
+					Status:      saga.StepStatusFailed,
+					Error:       "step returned HTTP 503",
+					ErrorDetail: detail,
+				},
+			},
+			StepDefs: []saga.StepDefinition{
+				{Name: "step-1", ForwardURL: "http://example.com", CompensateURL: "http://example.com"},
+			},
+		}
+		if err := s.Create(ctx, exec); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+
+		got, err := s.Get(ctx, "err-detail-1")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		d := got.Steps[0].ErrorDetail
+		if d == nil {
+			t.Fatal("ErrorDetail is nil after round-trip")
+		}
+		if d.HTTPStatusCode != detail.HTTPStatusCode {
+			t.Errorf("HTTPStatusCode: got %d, want %d", d.HTTPStatusCode, detail.HTTPStatusCode)
+		}
+		if d.ResponseBody != detail.ResponseBody {
+			t.Errorf("ResponseBody: got %q, want %q", d.ResponseBody, detail.ResponseBody)
+		}
+		if d.IsNetworkError != detail.IsNetworkError {
+			t.Errorf("IsNetworkError: got %v, want %v", d.IsNetworkError, detail.IsNetworkError)
+		}
+		if d.DurationMs != detail.DurationMs {
+			t.Errorf("DurationMs: got %d, want %d", d.DurationMs, detail.DurationMs)
+		}
+		if d.Message != detail.Message {
+			t.Errorf("Message: got %q, want %q", d.Message, detail.Message)
+		}
+	})
+
 	t.Run("PersistsAcrossReopen", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "persist.db")
 		ctx := context.Background()

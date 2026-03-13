@@ -194,7 +194,8 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 			return nil, fmt.Errorf("persist step RUNNING: %w", err)
 		}
 
-		err = e.callHTTPWithRetry(sagaCtx, def.ForwardURL, exec.Payload, def)
+		var stepDetail *saga.StepError
+		stepDetail, err = e.callHTTPWithRetry(sagaCtx, def.ForwardURL, exec.Payload, def)
 
 		t = time.Now().UTC()
 		step.CompletedAt = &t
@@ -202,6 +203,7 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 		if err != nil {
 			step.Status = saga.StepStatusFailed
 			step.Error = err.Error()
+			step.ErrorDetail = stepDetail
 			exec.FailedStep = step.Name
 			if uerr := e.updateWithRetry(sagaCtx, exec); uerr != nil {
 				e.markFailedBestEffort(exec, step.Name, uerr.Error())
@@ -257,14 +259,15 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 			return nil, fmt.Errorf("persist step COMPENSATING: %w", err)
 		}
 
-		err = e.callHTTPWithRetry(compCtx, def.CompensateURL, exec.Payload, def)
+		compDetail, compErr := e.callHTTPWithRetry(compCtx, def.CompensateURL, exec.Payload, def)
 
 		t := time.Now().UTC()
 		step.CompletedAt = &t
 
-		if err != nil {
+		if compErr != nil {
 			step.Status = saga.StepStatusCompensationFailed
-			step.Error = fmt.Sprintf("compensation failed: %s", err)
+			step.Error = fmt.Sprintf("compensation failed: %s", compErr)
+			step.ErrorDetail = compDetail
 		} else {
 			step.Status = saga.StepStatusCompensated
 		}
@@ -295,7 +298,8 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 // backoff with full jitter: sleep = rand(0, base * 2^attempt).
 // The number of retries and base backoff come from the StepDefinition if set,
 // otherwise from the engine defaults. Context cancellation stops retries early.
-func (e *Engine) callHTTPWithRetry(ctx context.Context, url string, payload []byte, def saga.StepDefinition) error {
+// Returns the structured StepError from the last attempt alongside the error.
+func (e *Engine) callHTTPWithRetry(ctx context.Context, url string, payload []byte, def saga.StepDefinition) (*saga.StepError, error) {
 	maxRetries := e.defaultMaxRetries
 	if def.MaxRetries > 0 {
 		maxRetries = def.MaxRetries
@@ -305,11 +309,16 @@ func (e *Engine) callHTTPWithRetry(ctx context.Context, url string, payload []by
 		baseMs = def.RetryBackoffMs
 	}
 
-	var err error
+	var (
+		err        error
+		lastDetail *saga.StepError
+	)
 	for attempt := range maxRetries + 1 {
-		err = e.callHTTP(ctx, url, payload, def.TimeoutSeconds)
+		var detail *saga.StepError
+		detail, err = e.callHTTP(ctx, url, payload, def.TimeoutSeconds)
+		lastDetail = detail
 		if err == nil {
-			return nil
+			return nil, nil
 		}
 		if attempt == maxRetries {
 			break
@@ -319,16 +328,16 @@ func (e *Engine) callHTTPWithRetry(ctx context.Context, url string, payload []by
 		sleep := time.Duration(rand.Int64N(int64(cap) + 1))
 		select {
 		case <-ctx.Done():
-			return err
+			return lastDetail, err
 		case <-time.After(sleep):
 		}
 	}
-	return err
+	return lastDetail, err
 }
 
-// callHTTP POSTs payload to url, returning an error for non-2xx responses or
-// transport failures.
-func (e *Engine) callHTTP(ctx context.Context, url string, payload []byte, timeoutSeconds int) error {
+// callHTTP POSTs payload to url, returning a structured StepError and a plain
+// error for non-2xx responses or transport failures. On success both are nil.
+func (e *Engine) callHTTP(ctx context.Context, url string, payload []byte, timeoutSeconds int) (*saga.StepError, error) {
 	timeout := e.defaultTimeout
 	if timeoutSeconds > 0 {
 		timeout = time.Duration(timeoutSeconds) * time.Second
@@ -339,35 +348,52 @@ func (e *Engine) callHTTP(ctx context.Context, url string, payload []byte, timeo
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
-		return fmt.Errorf("build request: %w", err)
+		return nil, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
+	start := time.Now()
 	resp, err := e.httpClient.Do(req)
+	durationMs := time.Since(start).Milliseconds()
 	if err != nil {
-		return fmt.Errorf("http post %s: %w", url, err)
+		msg := fmt.Sprintf("http post %s: %v", url, err)
+		return &saga.StepError{
+			Message:        msg,
+			IsNetworkError: true,
+			DurationMs:     durationMs,
+		}, fmt.Errorf("http post %s: %w", url, err)
 	}
 
-	// Determine step outcome before touching the body.
-	var stepErr error
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		stepErr = fmt.Errorf("step returned HTTP %d", resp.StatusCode)
+		// Read up to 512 bytes of the body for operator diagnostics; drain
+		// the rest so the connection can be reused.
+		var preview []byte
+		if p, readErr := io.ReadAll(io.LimitReader(resp.Body, 512)); readErr == nil {
+			preview = p
+		}
+		_, drainErr := io.Copy(io.Discard, resp.Body)
+		closeErr := resp.Body.Close()
+		_ = drainErr
+		_ = closeErr
+		msg := fmt.Sprintf("step returned HTTP %d", resp.StatusCode)
+		return &saga.StepError{
+			Message:        msg,
+			HTTPStatusCode: resp.StatusCode,
+			ResponseBody:   string(preview),
+			DurationMs:     durationMs,
+		}, fmt.Errorf("%s", msg)
 	}
 
-	// Drain body to allow connection reuse, then close.
-	// Step failure takes precedence — drain/close errors only surface when
-	// the step itself succeeded.
+	// Step succeeded — drain body to allow connection reuse, then close.
+	// Drain/close errors only surface when the step itself succeeded.
 	_, drainErr := io.Copy(io.Discard, resp.Body)
 	closeErr := resp.Body.Close()
 
-	if stepErr != nil {
-		return stepErr
-	}
 	if drainErr != nil {
-		return fmt.Errorf("drain response body: %w", drainErr)
+		return nil, fmt.Errorf("drain response body: %w", drainErr)
 	}
 	if closeErr != nil {
-		return fmt.Errorf("close response body: %w", closeErr)
+		return nil, fmt.Errorf("close response body: %w", closeErr)
 	}
-	return nil
+	return nil, nil
 }

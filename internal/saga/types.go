@@ -47,11 +47,32 @@ type StepDefinition struct {
 	RetryBackoffMs int `json:"retry_backoff_ms,omitempty"`
 }
 
+// StepError holds structured context for a failed step HTTP call.
+// It is stored as JSON in the execution blob alongside the plain Error string.
+type StepError struct {
+	// Message is the human-readable summary (matches step.Error).
+	Message string `json:"message"`
+	// HTTPStatusCode is the HTTP response status, or 0 for transport errors.
+	HTTPStatusCode int `json:"http_status_code,omitempty"`
+	// ResponseBody holds the first 512 bytes of the response body, empty on
+	// transport errors. Gives operators the service-returned error message.
+	ResponseBody string `json:"response_body,omitempty"`
+	// IsNetworkError is true when no HTTP response was received (connection
+	// refused, timeout, context cancellation).
+	IsNetworkError bool `json:"is_network_error,omitempty"`
+	// DurationMs is the round-trip time of the HTTP call in milliseconds.
+	DurationMs int64 `json:"duration_ms"`
+}
+
 // StepExecution is the runtime state of a step within a saga execution.
 type StepExecution struct {
-	Name        string     `json:"name"`
-	Status      StepStatus `json:"status"`
-	Error       string     `json:"error,omitempty"`
+	Name   string     `json:"name"`
+	Status StepStatus `json:"status"`
+	// Error is the plain-string error message, kept for backward compatibility.
+	Error string `json:"error,omitempty"`
+	// ErrorDetail holds structured context for failed steps. Stored as a nested
+	// JSON object in the execution blob; nil on success.
+	ErrorDetail *StepError `json:"error_detail,omitempty"`
 	StartedAt   *time.Time `json:"started_at,omitempty"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
 }

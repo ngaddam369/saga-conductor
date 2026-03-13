@@ -317,6 +317,121 @@ func TestEngine(t *testing.T) {
 		}
 	})
 
+	t.Run("StepErrorDetailHTTP", func(t *testing.T) {
+		// A non-2xx step response must populate ErrorDetail with the HTTP status
+		// code, the first 512 bytes of the response body, DurationMs, and
+		// IsNetworkError=false.
+		eng, s := newEngine(t)
+
+		body := "invalid payment method"
+		fwd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(body))
+		}))
+		t.Cleanup(fwd.Close)
+
+		seedSaga(t, s, []saga.StepDefinition{
+			{Name: "step-1", ForwardURL: fwd.URL, CompensateURL: fwd.URL},
+		})
+
+		exec, err := eng.Start(context.Background(), "saga-1")
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if exec.Status != saga.SagaStatusFailed {
+			t.Errorf("Status: got %q, want FAILED", exec.Status)
+		}
+
+		d := exec.Steps[0].ErrorDetail
+		if d == nil {
+			t.Fatal("ErrorDetail is nil, want structured error")
+		}
+		if d.HTTPStatusCode != http.StatusUnprocessableEntity {
+			t.Errorf("HTTPStatusCode: got %d, want 422", d.HTTPStatusCode)
+		}
+		if d.ResponseBody != body {
+			t.Errorf("ResponseBody: got %q, want %q", d.ResponseBody, body)
+		}
+		if d.IsNetworkError {
+			t.Error("IsNetworkError: got true, want false for HTTP error")
+		}
+		if d.DurationMs < 0 {
+			t.Errorf("DurationMs: got %d, want >= 0", d.DurationMs)
+		}
+		if !strings.Contains(d.Message, "422") {
+			t.Errorf("Message %q does not contain 422", d.Message)
+		}
+	})
+
+	t.Run("StepErrorDetailNetwork", func(t *testing.T) {
+		// A transport-level failure (connection refused) must populate ErrorDetail
+		// with IsNetworkError=true and HTTPStatusCode=0.
+		eng, s := newEngine(t)
+
+		// Start a server, capture its URL, then close it so connections are refused.
+		closed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+		closedURL := closed.URL
+		closed.Close()
+
+		seedSaga(t, s, []saga.StepDefinition{
+			{Name: "step-1", ForwardURL: closedURL, CompensateURL: closedURL},
+		})
+
+		exec, err := eng.Start(context.Background(), "saga-1")
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if exec.Status != saga.SagaStatusFailed {
+			t.Errorf("Status: got %q, want FAILED", exec.Status)
+		}
+
+		d := exec.Steps[0].ErrorDetail
+		if d == nil {
+			t.Fatal("ErrorDetail is nil, want structured error")
+		}
+		if !d.IsNetworkError {
+			t.Error("IsNetworkError: got false, want true for transport error")
+		}
+		if d.HTTPStatusCode != 0 {
+			t.Errorf("HTTPStatusCode: got %d, want 0 for transport error", d.HTTPStatusCode)
+		}
+		if d.ResponseBody != "" {
+			t.Errorf("ResponseBody: got %q, want empty for transport error", d.ResponseBody)
+		}
+	})
+
+	t.Run("StepErrorBodyTruncatedAt512", func(t *testing.T) {
+		// Response bodies larger than 512 bytes must be truncated in ErrorDetail.
+		eng, s := newEngine(t)
+
+		longBody := strings.Repeat("x", 1024)
+		fwd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(longBody))
+		}))
+		t.Cleanup(fwd.Close)
+
+		seedSaga(t, s, []saga.StepDefinition{
+			{Name: "step-1", ForwardURL: fwd.URL, CompensateURL: fwd.URL},
+		})
+
+		exec, err := eng.Start(context.Background(), "saga-1")
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+
+		d := exec.Steps[0].ErrorDetail
+		if d == nil {
+			t.Fatal("ErrorDetail is nil")
+		}
+		if len(d.ResponseBody) > 512 {
+			t.Errorf("ResponseBody length %d exceeds 512-byte cap", len(d.ResponseBody))
+		}
+		if len(d.ResponseBody) == 0 {
+			t.Error("ResponseBody is empty, expected truncated content")
+		}
+	})
+
 	t.Run("ContextAlreadyCanceled", func(t *testing.T) {
 		eng, s := newEngine(t)
 

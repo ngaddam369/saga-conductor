@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -70,12 +71,21 @@ func run() error {
 	}
 
 	// Health HTTP server.
+	// ready is flipped to false on SIGTERM so the load balancer stops routing
+	// traffic before GracefulStop() closes connections.
+	var ready atomic.Bool
+	ready.Store(true)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health/live", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("/health/ready", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
+		if ready.Load() {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
 	})
 	healthSrv := &http.Server{
 		Addr:         cfg.healthAddr,
@@ -110,6 +120,12 @@ func run() error {
 	case err = <-errCh:
 		return err
 	}
+
+	// Signal unreadiness so the load balancer stops routing new traffic, then
+	// wait for the drain period before closing connections.
+	ready.Store(false)
+	drainSecs := getEnvInt("SHUTDOWN_DRAIN_SECONDS", 5)
+	time.Sleep(time.Duration(drainSecs) * time.Second)
 
 	grpcServer.GracefulStop()
 

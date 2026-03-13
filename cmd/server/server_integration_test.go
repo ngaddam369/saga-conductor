@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -69,8 +70,10 @@ func productionGRPCServer(t *testing.T, cfg config) pb.SagaOrchestratorClient {
 }
 
 // productionHealthServer starts the health HTTP server as production does
-// (with timeouts) and returns its base URL.
-func productionHealthServer(t *testing.T, cfg config) string {
+// (with timeouts and a readiness flag) and returns its base URL.
+// Pass a ready flag initialised to true for normal operation; set it to false
+// to simulate the shutdown drain phase.
+func productionHealthServer(t *testing.T, cfg config, ready *atomic.Bool) string {
 	t.Helper()
 
 	mux := http.NewServeMux()
@@ -78,7 +81,11 @@ func productionHealthServer(t *testing.T, cfg config) string {
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("/health/ready", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
+		if ready.Load() {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
 	})
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
@@ -237,7 +244,9 @@ func TestIntegration(t *testing.T) {
 			},
 		}
 
-		baseURL := productionHealthServer(t, defaultTestConfig())
+		var ready atomic.Bool
+		ready.Store(true)
+		baseURL := productionHealthServer(t, defaultTestConfig(), &ready)
 
 		for _, tc := range tests {
 			t.Run(tc.name, func(t *testing.T) {
@@ -541,12 +550,46 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("ReadinessDrain", func(t *testing.T) {
+		// /health/ready must return 200 while ready=true and 503 after it is
+		// flipped to false, simulating the SIGTERM drain phase.
+		var ready atomic.Bool
+		ready.Store(true)
+		baseURL := productionHealthServer(t, defaultTestConfig(), &ready)
+
+		get := func(t *testing.T, path string) int {
+			t.Helper()
+			resp, err := http.Get(baseURL + path)
+			if err != nil {
+				t.Fatalf("GET %s: %v", path, err)
+			}
+			_ = resp.Body.Close()
+			return resp.StatusCode
+		}
+
+		if got := get(t, "/health/ready"); got != http.StatusOK {
+			t.Errorf("before drain: got %d, want 200", got)
+		}
+
+		ready.Store(false) // simulate SIGTERM
+
+		if got := get(t, "/health/ready"); got != http.StatusServiceUnavailable {
+			t.Errorf("after drain: got %d, want 503", got)
+		}
+		// /health/live must remain 200 throughout — only readiness is affected.
+		if got := get(t, "/health/live"); got != http.StatusOK {
+			t.Errorf("live after drain: got %d, want 200", got)
+		}
+	})
+
 	t.Run("HealthReadTimeout", func(t *testing.T) {
 		// A client that opens a connection and never sends headers must be
 		// dropped by the server's ReadTimeout, not held open indefinitely.
 		cfg := defaultTestConfig()
 		cfg.healthReadTimeoutSecs = 1
-		baseURL := productionHealthServer(t, cfg)
+		var ready atomic.Bool
+		ready.Store(true)
+		baseURL := productionHealthServer(t, cfg, &ready)
 
 		// Dial raw TCP and send nothing — the server should close the
 		// connection once ReadTimeout fires.

@@ -83,14 +83,17 @@ type StepExecution struct {
 
 // Execution is the runtime state of a saga.
 type Execution struct {
-	ID          string           `json:"id"`
-	Name        string           `json:"name"`
-	Status      SagaStatus       `json:"status"`
-	Steps       []StepExecution  `json:"steps"`
-	StepDefs    []StepDefinition `json:"step_defs"`
-	Payload     []byte           `json:"payload,omitempty"`
-	FailedStep  string           `json:"failed_step,omitempty"`
-	CreatedAt   time.Time        `json:"created_at"`
-	StartedAt   *time.Time       `json:"started_at,omitempty"`
-	CompletedAt *time.Time       `json:"completed_at,omitempty"`
+	ID         string           `json:"id"`
+	Name       string           `json:"name"`
+	Status     SagaStatus       `json:"status"`
+	Steps      []StepExecution  `json:"steps"`
+	StepDefs   []StepDefinition `json:"step_defs"`
+	Payload    []byte           `json:"payload,omitempty"`
+	FailedStep string           `json:"failed_step,omitempty"`
+	// SagaTimeoutSeconds overrides the server-wide SAGA_TIMEOUT_SECONDS env var
+	// for this specific saga. Zero means use the global default.
+	SagaTimeoutSeconds int        `json:"saga_timeout_seconds,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	StartedAt          *time.Time `json:"started_at,omitempty"`
+	CompletedAt        *time.Time `json:"completed_at,omitempty"`
 }

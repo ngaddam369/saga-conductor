@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -64,6 +65,9 @@ func (s *Server) CreateSaga(ctx context.Context, req *pb.CreateSagaRequest) (*pb
 	if len(req.Payload) > 10*1024*1024 {
 		return nil, status.Error(codes.InvalidArgument, "payload exceeds 10 MB")
 	}
+	if req.SagaTimeoutSeconds != 0 && (req.SagaTimeoutSeconds < 1 || req.SagaTimeoutSeconds > 86400) {
+		return nil, status.Error(codes.InvalidArgument, "saga_timeout_seconds must be in [1, 86400]")
+	}
 
 	seen := make(map[string]struct{}, len(req.Steps))
 	stepDefs := make([]saga.StepDefinition, len(req.Steps))
@@ -109,13 +113,14 @@ func (s *Server) CreateSaga(ctx context.Context, req *pb.CreateSagaRequest) (*pb
 	}
 
 	exec := &saga.Execution{
-		ID:        uuid.New().String(),
-		Name:      req.Name,
-		Status:    saga.SagaStatusPending,
-		StepDefs:  stepDefs,
-		Steps:     stepExecs,
-		Payload:   req.Payload,
-		CreatedAt: time.Now().UTC(),
+		ID:                 uuid.New().String(),
+		Name:               req.Name,
+		Status:             saga.SagaStatusPending,
+		StepDefs:           stepDefs,
+		Steps:              stepExecs,
+		Payload:            req.Payload,
+		SagaTimeoutSeconds: int(req.SagaTimeoutSeconds),
+		CreatedAt:          time.Now().UTC(),
 	}
 
 	if err := s.store.Create(ctx, exec); err != nil {
@@ -197,12 +202,19 @@ func (s *Server) ListSagas(ctx context.Context, req *pb.ListSagasRequest) (*pb.L
 func toProto(exec *saga.Execution) *pb.SagaExecution {
 	pbSteps := make([]*pb.StepExecution, len(exec.Steps))
 	for i, st := range exec.Steps {
+		var errorDetail []byte
+		if st.ErrorDetail != nil {
+			if b, err := json.Marshal(st.ErrorDetail); err == nil {
+				errorDetail = b
+			}
+		}
 		pbSteps[i] = &pb.StepExecution{
 			Name:        st.Name,
 			Status:      toProtoStepStatus(st.Status),
 			Error:       st.Error,
 			StartedAt:   timeToProto(st.StartedAt),
 			CompletedAt: timeToProto(st.CompletedAt),
+			ErrorDetail: errorDetail,
 		}
 	}
 
@@ -239,10 +251,7 @@ func toProtoSagaStatus(s saga.SagaStatus) pb.SagaStatus {
 	case saga.SagaStatusFailed:
 		return pb.SagaStatus_SAGA_STATUS_FAILED
 	case saga.SagaStatusAborted:
-		// SAGA_STATUS_ABORTED is not yet in the generated proto enum (pb.go
-		// regeneration requires the proto toolchain). Return UNSPECIFIED until
-		// regeneration is done.
-		return pb.SagaStatus_SAGA_STATUS_UNSPECIFIED
+		return pb.SagaStatus_SAGA_STATUS_ABORTED
 	default:
 		return pb.SagaStatus_SAGA_STATUS_UNSPECIFIED
 	}
@@ -281,6 +290,8 @@ func fromProtoStatus(s pb.SagaStatus) saga.SagaStatus {
 		return saga.SagaStatusCompleted
 	case pb.SagaStatus_SAGA_STATUS_FAILED:
 		return saga.SagaStatusFailed
+	case pb.SagaStatus_SAGA_STATUS_ABORTED:
+		return saga.SagaStatusAborted
 	default:
 		return ""
 	}

@@ -50,6 +50,10 @@ message StepExecution {
   string     error        = 3;
   google.protobuf.Timestamp started_at   = 4;
   google.protobuf.Timestamp completed_at = 5;
+  // error_detail is a JSON-encoded StepError with structured context for failed
+  // steps (HTTP status code, response body excerpt, network error flag,
+  // duration). Present only when status is FAILED or COMPENSATION_FAILED.
+  bytes      error_detail = 6;
 }
 
 message SagaExecution {
@@ -71,6 +75,10 @@ message CreateSagaRequest {
   string name    = 1;
   repeated StepDefinition steps   = 2;
   bytes  payload = 3;
+  // saga_timeout_seconds is the per-saga execution deadline in seconds.
+  // If non-zero it overrides the server-wide SAGA_TIMEOUT_SECONDS env var.
+  // Valid range: 1–86400 (24 h). Zero means use the server default.
+  int32  saga_timeout_seconds = 4;
 }
 
 message CreateSagaResponse {
@@ -128,8 +136,6 @@ service SagaOrchestrator {
   rpc ListSagas(ListSagasRequest) returns (ListSagasResponse);
 
   // Forcibly abort a non-terminal saga. Marks it ABORTED immediately.
-  // NOTE: pb.go regeneration is deferred until the proto toolchain is set up.
-  // Until then, AbortSaga is exposed via POST /admin/sagas/{id}/abort on the
-  // health port.
+  // No compensation is triggered. Also available via POST /admin/sagas/{id}/abort.
   rpc AbortSaga(AbortSagaRequest) returns (AbortSagaResponse);
 }

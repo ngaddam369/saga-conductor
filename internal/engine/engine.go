@@ -231,8 +231,12 @@ func (e *Engine) Resume(ctx context.Context, id string) (*saga.Execution, error)
 
 	sagaCtx := ctx
 	var sagaCancel context.CancelFunc
-	if e.sagaTimeoutSecs > 0 {
-		sagaCtx, sagaCancel = context.WithTimeout(ctx, time.Duration(e.sagaTimeoutSecs)*time.Second)
+	timeoutSecs := e.sagaTimeoutSecs
+	if exec.SagaTimeoutSeconds > 0 {
+		timeoutSecs = exec.SagaTimeoutSeconds
+	}
+	if timeoutSecs > 0 {
+		sagaCtx, sagaCancel = context.WithTimeout(ctx, time.Duration(timeoutSecs)*time.Second)
 		defer sagaCancel()
 	}
 
@@ -415,7 +419,7 @@ compensate:
 	}
 
 	if sagaCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
-		return exec, fmt.Errorf("saga timed out after %ds: %w", e.sagaTimeoutSecs, context.DeadlineExceeded)
+		return exec, fmt.Errorf("saga timed out after %ds: %w", timeoutSecs, context.DeadlineExceeded)
 	}
 	return exec, nil
 }
@@ -444,10 +448,15 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 
 	// Derive a saga-scoped deadline for forward execution. This caps total saga
 	// duration independently of per-step timeouts (STEP_TIMEOUT_SECONDS).
+	// Per-saga timeout (SagaTimeoutSeconds) takes precedence over the global env var.
 	sagaCtx := ctx
 	var sagaCancel context.CancelFunc
-	if e.sagaTimeoutSecs > 0 {
-		sagaCtx, sagaCancel = context.WithTimeout(ctx, time.Duration(e.sagaTimeoutSecs)*time.Second)
+	timeoutSecs := e.sagaTimeoutSecs
+	if exec.SagaTimeoutSeconds > 0 {
+		timeoutSecs = exec.SagaTimeoutSeconds
+	}
+	if timeoutSecs > 0 {
+		sagaCtx, sagaCancel = context.WithTimeout(ctx, time.Duration(timeoutSecs)*time.Second)
 		defer sagaCancel()
 	}
 
@@ -586,7 +595,7 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 	// If the saga's own deadline fired (not the caller's context), return a
 	// typed error so the gRPC server maps it to codes.DeadlineExceeded.
 	if sagaCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
-		return exec, fmt.Errorf("saga timed out after %ds: %w", e.sagaTimeoutSecs, context.DeadlineExceeded)
+		return exec, fmt.Errorf("saga timed out after %ds: %w", timeoutSecs, context.DeadlineExceeded)
 	}
 	return exec, nil
 }

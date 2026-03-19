@@ -31,6 +31,9 @@ const (
 	SagaStatus_SAGA_STATUS_COMPENSATING SagaStatus = 3
 	SagaStatus_SAGA_STATUS_COMPLETED    SagaStatus = 4
 	SagaStatus_SAGA_STATUS_FAILED       SagaStatus = 5
+	// SAGA_STATUS_ABORTED is set by the AbortSaga RPC. Terminal state.
+	// NOTE: pb.go regeneration is deferred until the proto toolchain is set up.
+	SagaStatus_SAGA_STATUS_ABORTED SagaStatus = 6
 )
 
 // Enum value maps for SagaStatus.
@@ -42,6 +45,7 @@ var (
 		3: "SAGA_STATUS_COMPENSATING",
 		4: "SAGA_STATUS_COMPLETED",
 		5: "SAGA_STATUS_FAILED",
+		6: "SAGA_STATUS_ABORTED",
 	}
 	SagaStatus_value = map[string]int32{
 		"SAGA_STATUS_UNSPECIFIED":  0,
@@ -50,6 +54,7 @@ var (
 		"SAGA_STATUS_COMPENSATING": 3,
 		"SAGA_STATUS_COMPLETED":    4,
 		"SAGA_STATUS_FAILED":       5,
+		"SAGA_STATUS_ABORTED":      6,
 	}
 )
 
@@ -217,12 +222,16 @@ func (x *StepDefinition) GetTimeoutSeconds() int32 {
 }
 
 type StepExecution struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Status        StepStatus             `protobuf:"varint,2,opt,name=status,proto3,enum=saga.v1.StepStatus" json:"status,omitempty"`
-	Error         string                 `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
-	StartedAt     *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
-	CompletedAt   *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=completed_at,json=completedAt,proto3" json:"completed_at,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Name        string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Status      StepStatus             `protobuf:"varint,2,opt,name=status,proto3,enum=saga.v1.StepStatus" json:"status,omitempty"`
+	Error       string                 `protobuf:"bytes,3,opt,name=error,proto3" json:"error,omitempty"`
+	StartedAt   *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	CompletedAt *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=completed_at,json=completedAt,proto3" json:"completed_at,omitempty"`
+	// error_detail is a JSON-encoded StepError with structured context for failed
+	// steps (HTTP status code, response body excerpt, network error flag,
+	// duration). Present only when status is FAILED or COMPENSATION_FAILED.
+	ErrorDetail   []byte `protobuf:"bytes,6,opt,name=error_detail,json=errorDetail,proto3" json:"error_detail,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -288,6 +297,13 @@ func (x *StepExecution) GetStartedAt() *timestamppb.Timestamp {
 func (x *StepExecution) GetCompletedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.CompletedAt
+	}
+	return nil
+}
+
+func (x *StepExecution) GetErrorDetail() []byte {
+	if x != nil {
+		return x.ErrorDetail
 	}
 	return nil
 }
@@ -402,12 +418,16 @@ func (x *SagaExecution) GetCompletedAt() *timestamppb.Timestamp {
 }
 
 type CreateSagaRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Steps         []*StepDefinition      `protobuf:"bytes,2,rep,name=steps,proto3" json:"steps,omitempty"`
-	Payload       []byte                 `protobuf:"bytes,3,opt,name=payload,proto3" json:"payload,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Name    string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Steps   []*StepDefinition      `protobuf:"bytes,2,rep,name=steps,proto3" json:"steps,omitempty"`
+	Payload []byte                 `protobuf:"bytes,3,opt,name=payload,proto3" json:"payload,omitempty"`
+	// saga_timeout_seconds is the per-saga execution deadline in seconds.
+	// If non-zero it overrides the server-wide SAGA_TIMEOUT_SECONDS env var.
+	// Valid range: 1–86400 (24 h). Zero means use the server default.
+	SagaTimeoutSeconds int32 `protobuf:"varint,4,opt,name=saga_timeout_seconds,json=sagaTimeoutSeconds,proto3" json:"saga_timeout_seconds,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *CreateSagaRequest) Reset() {
@@ -459,6 +479,13 @@ func (x *CreateSagaRequest) GetPayload() []byte {
 		return x.Payload
 	}
 	return nil
+}
+
+func (x *CreateSagaRequest) GetSagaTimeoutSeconds() int32 {
+	if x != nil {
+		return x.SagaTimeoutSeconds
+	}
+	return 0
 }
 
 type CreateSagaResponse struct {
@@ -770,6 +797,94 @@ func (x *ListSagasResponse) GetSagas() []*SagaExecution {
 	return nil
 }
 
+type AbortSagaRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SagaId        string                 `protobuf:"bytes,1,opt,name=saga_id,json=sagaId,proto3" json:"saga_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AbortSagaRequest) Reset() {
+	*x = AbortSagaRequest{}
+	mi := &file_proto_saga_v1_saga_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AbortSagaRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AbortSagaRequest) ProtoMessage() {}
+
+func (x *AbortSagaRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_saga_v1_saga_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AbortSagaRequest.ProtoReflect.Descriptor instead.
+func (*AbortSagaRequest) Descriptor() ([]byte, []int) {
+	return file_proto_saga_v1_saga_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *AbortSagaRequest) GetSagaId() string {
+	if x != nil {
+		return x.SagaId
+	}
+	return ""
+}
+
+type AbortSagaResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Saga          *SagaExecution         `protobuf:"bytes,1,opt,name=saga,proto3" json:"saga,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AbortSagaResponse) Reset() {
+	*x = AbortSagaResponse{}
+	mi := &file_proto_saga_v1_saga_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AbortSagaResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AbortSagaResponse) ProtoMessage() {}
+
+func (x *AbortSagaResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_saga_v1_saga_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AbortSagaResponse.ProtoReflect.Descriptor instead.
+func (*AbortSagaResponse) Descriptor() ([]byte, []int) {
+	return file_proto_saga_v1_saga_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *AbortSagaResponse) GetSaga() *SagaExecution {
+	if x != nil {
+		return x.Saga
+	}
+	return nil
+}
+
 var File_proto_saga_v1_saga_proto protoreflect.FileDescriptor
 
 const file_proto_saga_v1_saga_proto_rawDesc = "" +
@@ -780,14 +895,15 @@ const file_proto_saga_v1_saga_proto_rawDesc = "" +
 	"\vforward_url\x18\x02 \x01(\tR\n" +
 	"forwardUrl\x12%\n" +
 	"\x0ecompensate_url\x18\x03 \x01(\tR\rcompensateUrl\x12'\n" +
-	"\x0ftimeout_seconds\x18\x04 \x01(\x05R\x0etimeoutSeconds\"\xe0\x01\n" +
+	"\x0ftimeout_seconds\x18\x04 \x01(\x05R\x0etimeoutSeconds\"\x83\x02\n" +
 	"\rStepExecution\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12+\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x13.saga.v1.StepStatusR\x06status\x12\x14\n" +
 	"\x05error\x18\x03 \x01(\tR\x05error\x129\n" +
 	"\n" +
 	"started_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x12=\n" +
-	"\fcompleted_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\vcompletedAt\"\xfe\x02\n" +
+	"\fcompleted_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\vcompletedAt\x12!\n" +
+	"\ferror_detail\x18\x06 \x01(\fR\verrorDetail\"\xfe\x02\n" +
 	"\rSagaExecution\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12+\n" +
@@ -800,11 +916,12 @@ const file_proto_saga_v1_saga_proto_rawDesc = "" +
 	"created_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
 	"started_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x12=\n" +
-	"\fcompleted_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\vcompletedAt\"p\n" +
+	"\fcompleted_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\vcompletedAt\"\xa2\x01\n" +
 	"\x11CreateSagaRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12-\n" +
 	"\x05steps\x18\x02 \x03(\v2\x17.saga.v1.StepDefinitionR\x05steps\x12\x18\n" +
-	"\apayload\x18\x03 \x01(\fR\apayload\"@\n" +
+	"\apayload\x18\x03 \x01(\fR\apayload\x120\n" +
+	"\x14saga_timeout_seconds\x18\x04 \x01(\x05R\x12sagaTimeoutSeconds\"@\n" +
 	"\x12CreateSagaResponse\x12*\n" +
 	"\x04saga\x18\x01 \x01(\v2\x16.saga.v1.SagaExecutionR\x04saga\"+\n" +
 	"\x10StartSagaRequest\x12\x17\n" +
@@ -818,7 +935,11 @@ const file_proto_saga_v1_saga_proto_rawDesc = "" +
 	"\x10ListSagasRequest\x12+\n" +
 	"\x06status\x18\x01 \x01(\x0e2\x13.saga.v1.SagaStatusR\x06status\"A\n" +
 	"\x11ListSagasResponse\x12,\n" +
-	"\x05sagas\x18\x01 \x03(\v2\x16.saga.v1.SagaExecutionR\x05sagas*\xac\x01\n" +
+	"\x05sagas\x18\x01 \x03(\v2\x16.saga.v1.SagaExecutionR\x05sagas\"+\n" +
+	"\x10AbortSagaRequest\x12\x17\n" +
+	"\asaga_id\x18\x01 \x01(\tR\x06sagaId\"?\n" +
+	"\x11AbortSagaResponse\x12*\n" +
+	"\x04saga\x18\x01 \x01(\v2\x16.saga.v1.SagaExecutionR\x04saga*\xc5\x01\n" +
 	"\n" +
 	"SagaStatus\x12\x1b\n" +
 	"\x17SAGA_STATUS_UNSPECIFIED\x10\x00\x12\x17\n" +
@@ -826,7 +947,8 @@ const file_proto_saga_v1_saga_proto_rawDesc = "" +
 	"\x13SAGA_STATUS_RUNNING\x10\x02\x12\x1c\n" +
 	"\x18SAGA_STATUS_COMPENSATING\x10\x03\x12\x19\n" +
 	"\x15SAGA_STATUS_COMPLETED\x10\x04\x12\x16\n" +
-	"\x12SAGA_STATUS_FAILED\x10\x05*\xee\x01\n" +
+	"\x12SAGA_STATUS_FAILED\x10\x05\x12\x17\n" +
+	"\x13SAGA_STATUS_ABORTED\x10\x06*\xee\x01\n" +
 	"\n" +
 	"StepStatus\x12\x1b\n" +
 	"\x17STEP_STATUS_UNSPECIFIED\x10\x00\x12\x17\n" +
@@ -836,13 +958,14 @@ const file_proto_saga_v1_saga_proto_rawDesc = "" +
 	"\x12STEP_STATUS_FAILED\x10\x04\x12\x1c\n" +
 	"\x18STEP_STATUS_COMPENSATING\x10\x05\x12\x1b\n" +
 	"\x17STEP_STATUS_COMPENSATED\x10\x06\x12#\n" +
-	"\x1fSTEP_STATUS_COMPENSATION_FAILED\x10\a2\x9f\x02\n" +
+	"\x1fSTEP_STATUS_COMPENSATION_FAILED\x10\a2\xe3\x02\n" +
 	"\x10SagaOrchestrator\x12E\n" +
 	"\n" +
 	"CreateSaga\x12\x1a.saga.v1.CreateSagaRequest\x1a\x1b.saga.v1.CreateSagaResponse\x12B\n" +
 	"\tStartSaga\x12\x19.saga.v1.StartSagaRequest\x1a\x1a.saga.v1.StartSagaResponse\x12<\n" +
 	"\aGetSaga\x12\x17.saga.v1.GetSagaRequest\x1a\x18.saga.v1.GetSagaResponse\x12B\n" +
-	"\tListSagas\x12\x19.saga.v1.ListSagasRequest\x1a\x1a.saga.v1.ListSagasResponseB4Z2github.com/ngaddam369/saga-conductor/proto/saga/v1b\x06proto3"
+	"\tListSagas\x12\x19.saga.v1.ListSagasRequest\x1a\x1a.saga.v1.ListSagasResponse\x12B\n" +
+	"\tAbortSaga\x12\x19.saga.v1.AbortSagaRequest\x1a\x1a.saga.v1.AbortSagaResponseB4Z2github.com/ngaddam369/saga-conductor/proto/saga/v1b\x06proto3"
 
 var (
 	file_proto_saga_v1_saga_proto_rawDescOnce sync.Once
@@ -857,7 +980,7 @@ func file_proto_saga_v1_saga_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_saga_v1_saga_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_proto_saga_v1_saga_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_proto_saga_v1_saga_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_proto_saga_v1_saga_proto_goTypes = []any{
 	(SagaStatus)(0),               // 0: saga.v1.SagaStatus
 	(StepStatus)(0),               // 1: saga.v1.StepStatus
@@ -872,36 +995,41 @@ var file_proto_saga_v1_saga_proto_goTypes = []any{
 	(*GetSagaResponse)(nil),       // 10: saga.v1.GetSagaResponse
 	(*ListSagasRequest)(nil),      // 11: saga.v1.ListSagasRequest
 	(*ListSagasResponse)(nil),     // 12: saga.v1.ListSagasResponse
-	(*timestamppb.Timestamp)(nil), // 13: google.protobuf.Timestamp
+	(*AbortSagaRequest)(nil),      // 13: saga.v1.AbortSagaRequest
+	(*AbortSagaResponse)(nil),     // 14: saga.v1.AbortSagaResponse
+	(*timestamppb.Timestamp)(nil), // 15: google.protobuf.Timestamp
 }
 var file_proto_saga_v1_saga_proto_depIdxs = []int32{
 	1,  // 0: saga.v1.StepExecution.status:type_name -> saga.v1.StepStatus
-	13, // 1: saga.v1.StepExecution.started_at:type_name -> google.protobuf.Timestamp
-	13, // 2: saga.v1.StepExecution.completed_at:type_name -> google.protobuf.Timestamp
+	15, // 1: saga.v1.StepExecution.started_at:type_name -> google.protobuf.Timestamp
+	15, // 2: saga.v1.StepExecution.completed_at:type_name -> google.protobuf.Timestamp
 	0,  // 3: saga.v1.SagaExecution.status:type_name -> saga.v1.SagaStatus
 	3,  // 4: saga.v1.SagaExecution.steps:type_name -> saga.v1.StepExecution
-	13, // 5: saga.v1.SagaExecution.created_at:type_name -> google.protobuf.Timestamp
-	13, // 6: saga.v1.SagaExecution.started_at:type_name -> google.protobuf.Timestamp
-	13, // 7: saga.v1.SagaExecution.completed_at:type_name -> google.protobuf.Timestamp
+	15, // 5: saga.v1.SagaExecution.created_at:type_name -> google.protobuf.Timestamp
+	15, // 6: saga.v1.SagaExecution.started_at:type_name -> google.protobuf.Timestamp
+	15, // 7: saga.v1.SagaExecution.completed_at:type_name -> google.protobuf.Timestamp
 	2,  // 8: saga.v1.CreateSagaRequest.steps:type_name -> saga.v1.StepDefinition
 	4,  // 9: saga.v1.CreateSagaResponse.saga:type_name -> saga.v1.SagaExecution
 	4,  // 10: saga.v1.StartSagaResponse.saga:type_name -> saga.v1.SagaExecution
 	4,  // 11: saga.v1.GetSagaResponse.saga:type_name -> saga.v1.SagaExecution
 	0,  // 12: saga.v1.ListSagasRequest.status:type_name -> saga.v1.SagaStatus
 	4,  // 13: saga.v1.ListSagasResponse.sagas:type_name -> saga.v1.SagaExecution
-	5,  // 14: saga.v1.SagaOrchestrator.CreateSaga:input_type -> saga.v1.CreateSagaRequest
-	7,  // 15: saga.v1.SagaOrchestrator.StartSaga:input_type -> saga.v1.StartSagaRequest
-	9,  // 16: saga.v1.SagaOrchestrator.GetSaga:input_type -> saga.v1.GetSagaRequest
-	11, // 17: saga.v1.SagaOrchestrator.ListSagas:input_type -> saga.v1.ListSagasRequest
-	6,  // 18: saga.v1.SagaOrchestrator.CreateSaga:output_type -> saga.v1.CreateSagaResponse
-	8,  // 19: saga.v1.SagaOrchestrator.StartSaga:output_type -> saga.v1.StartSagaResponse
-	10, // 20: saga.v1.SagaOrchestrator.GetSaga:output_type -> saga.v1.GetSagaResponse
-	12, // 21: saga.v1.SagaOrchestrator.ListSagas:output_type -> saga.v1.ListSagasResponse
-	18, // [18:22] is the sub-list for method output_type
-	14, // [14:18] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	4,  // 14: saga.v1.AbortSagaResponse.saga:type_name -> saga.v1.SagaExecution
+	5,  // 15: saga.v1.SagaOrchestrator.CreateSaga:input_type -> saga.v1.CreateSagaRequest
+	7,  // 16: saga.v1.SagaOrchestrator.StartSaga:input_type -> saga.v1.StartSagaRequest
+	9,  // 17: saga.v1.SagaOrchestrator.GetSaga:input_type -> saga.v1.GetSagaRequest
+	11, // 18: saga.v1.SagaOrchestrator.ListSagas:input_type -> saga.v1.ListSagasRequest
+	13, // 19: saga.v1.SagaOrchestrator.AbortSaga:input_type -> saga.v1.AbortSagaRequest
+	6,  // 20: saga.v1.SagaOrchestrator.CreateSaga:output_type -> saga.v1.CreateSagaResponse
+	8,  // 21: saga.v1.SagaOrchestrator.StartSaga:output_type -> saga.v1.StartSagaResponse
+	10, // 22: saga.v1.SagaOrchestrator.GetSaga:output_type -> saga.v1.GetSagaResponse
+	12, // 23: saga.v1.SagaOrchestrator.ListSagas:output_type -> saga.v1.ListSagasResponse
+	14, // 24: saga.v1.SagaOrchestrator.AbortSaga:output_type -> saga.v1.AbortSagaResponse
+	20, // [20:25] is the sub-list for method output_type
+	15, // [15:20] is the sub-list for method input_type
+	15, // [15:15] is the sub-list for extension type_name
+	15, // [15:15] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
 func init() { file_proto_saga_v1_saga_proto_init() }
@@ -915,7 +1043,7 @@ func file_proto_saga_v1_saga_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_saga_v1_saga_proto_rawDesc), len(file_proto_saga_v1_saga_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   11,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

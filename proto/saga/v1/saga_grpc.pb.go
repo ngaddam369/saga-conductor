@@ -23,6 +23,7 @@ const (
 	SagaOrchestrator_StartSaga_FullMethodName  = "/saga.v1.SagaOrchestrator/StartSaga"
 	SagaOrchestrator_GetSaga_FullMethodName    = "/saga.v1.SagaOrchestrator/GetSaga"
 	SagaOrchestrator_ListSagas_FullMethodName  = "/saga.v1.SagaOrchestrator/ListSagas"
+	SagaOrchestrator_AbortSaga_FullMethodName  = "/saga.v1.SagaOrchestrator/AbortSaga"
 )
 
 // SagaOrchestratorClient is the client API for SagaOrchestrator service.
@@ -39,6 +40,9 @@ type SagaOrchestratorClient interface {
 	GetSaga(ctx context.Context, in *GetSagaRequest, opts ...grpc.CallOption) (*GetSagaResponse, error)
 	// List sagas, optionally filtered by status.
 	ListSagas(ctx context.Context, in *ListSagasRequest, opts ...grpc.CallOption) (*ListSagasResponse, error)
+	// Forcibly abort a non-terminal saga. Marks it ABORTED immediately.
+	// No compensation is triggered. Also available via POST /admin/sagas/{id}/abort.
+	AbortSaga(ctx context.Context, in *AbortSagaRequest, opts ...grpc.CallOption) (*AbortSagaResponse, error)
 }
 
 type sagaOrchestratorClient struct {
@@ -89,6 +93,16 @@ func (c *sagaOrchestratorClient) ListSagas(ctx context.Context, in *ListSagasReq
 	return out, nil
 }
 
+func (c *sagaOrchestratorClient) AbortSaga(ctx context.Context, in *AbortSagaRequest, opts ...grpc.CallOption) (*AbortSagaResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AbortSagaResponse)
+	err := c.cc.Invoke(ctx, SagaOrchestrator_AbortSaga_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SagaOrchestratorServer is the server API for SagaOrchestrator service.
 // All implementations must embed UnimplementedSagaOrchestratorServer
 // for forward compatibility.
@@ -103,6 +117,9 @@ type SagaOrchestratorServer interface {
 	GetSaga(context.Context, *GetSagaRequest) (*GetSagaResponse, error)
 	// List sagas, optionally filtered by status.
 	ListSagas(context.Context, *ListSagasRequest) (*ListSagasResponse, error)
+	// Forcibly abort a non-terminal saga. Marks it ABORTED immediately.
+	// No compensation is triggered. Also available via POST /admin/sagas/{id}/abort.
+	AbortSaga(context.Context, *AbortSagaRequest) (*AbortSagaResponse, error)
 	mustEmbedUnimplementedSagaOrchestratorServer()
 }
 
@@ -124,6 +141,9 @@ func (UnimplementedSagaOrchestratorServer) GetSaga(context.Context, *GetSagaRequ
 }
 func (UnimplementedSagaOrchestratorServer) ListSagas(context.Context, *ListSagasRequest) (*ListSagasResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ListSagas not implemented")
+}
+func (UnimplementedSagaOrchestratorServer) AbortSaga(context.Context, *AbortSagaRequest) (*AbortSagaResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method AbortSaga not implemented")
 }
 func (UnimplementedSagaOrchestratorServer) mustEmbedUnimplementedSagaOrchestratorServer() {}
 func (UnimplementedSagaOrchestratorServer) testEmbeddedByValue()                          {}
@@ -218,6 +238,24 @@ func _SagaOrchestrator_ListSagas_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SagaOrchestrator_AbortSaga_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AbortSagaRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SagaOrchestratorServer).AbortSaga(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SagaOrchestrator_AbortSaga_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SagaOrchestratorServer).AbortSaga(ctx, req.(*AbortSagaRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SagaOrchestrator_ServiceDesc is the grpc.ServiceDesc for SagaOrchestrator service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -240,6 +278,10 @@ var SagaOrchestrator_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ListSagas",
 			Handler:    _SagaOrchestrator_ListSagas_Handler,
+		},
+		{
+			MethodName: "AbortSaga",
+			Handler:    _SagaOrchestrator_AbortSaga_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

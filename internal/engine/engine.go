@@ -150,6 +150,51 @@ func (e *Engine) markFailedBestEffort(exec *saga.Execution, step, cause string) 
 	}
 }
 
+// Abort forcibly transitions a non-terminal saga to ABORTED and persists the
+// terminal state. It is an operator escape hatch for sagas stuck in PENDING,
+// RUNNING, or COMPENSATING with no active caller.
+//
+// If the saga is RUNNING or COMPENSATING an active engine goroutine (Start or
+// Resume) may still be executing against it. Abort cannot cancel that goroutine,
+// so its subsequent store.Update calls may race with the ABORTED write. This is
+// accepted: Abort is best-effort for in-flight sagas and is designed primarily
+// for truly stuck sagas that have no active caller.
+//
+// No compensation pass is triggered by Abort. If the saga was RUNNING and some
+// steps had succeeded, those steps' compensations will not be called. The
+// operator is taking explicit responsibility for any cleanup.
+func (e *Engine) Abort(ctx context.Context, id string) (*saga.Execution, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("context already done: %w", err)
+	}
+
+	exec, err := e.store.Get(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("get saga: %w", err)
+	}
+
+	switch exec.Status {
+	case saga.SagaStatusCompleted:
+		return nil, store.ErrAlreadyCompleted
+	case saga.SagaStatusFailed:
+		return nil, store.ErrAlreadyFailed
+	case saga.SagaStatusAborted:
+		return nil, store.ErrAlreadyAborted
+	}
+
+	if err = saga.ValidateTransition(exec.Status, saga.SagaStatusAborted); err != nil {
+		return nil, fmt.Errorf("state machine: %w", err)
+	}
+
+	now := time.Now().UTC()
+	exec.Status = saga.SagaStatusAborted
+	exec.CompletedAt = &now
+	if err = e.store.Update(ctx, exec); err != nil {
+		return nil, fmt.Errorf("persist ABORTED: %w", err)
+	}
+	return exec, nil
+}
+
 // Resume re-drives a saga that was left in RUNNING or COMPENSATING state after
 // a process crash. Unlike Start(), it does not require the saga to be PENDING
 // and skips steps that already reached a terminal state in the previous run.

@@ -238,6 +238,11 @@ func toProtoSagaStatus(s saga.SagaStatus) pb.SagaStatus {
 		return pb.SagaStatus_SAGA_STATUS_COMPLETED
 	case saga.SagaStatusFailed:
 		return pb.SagaStatus_SAGA_STATUS_FAILED
+	case saga.SagaStatusAborted:
+		// SAGA_STATUS_ABORTED is not yet in the generated proto enum (pb.go
+		// regeneration requires the proto toolchain). Return UNSPECIFIED until
+		// regeneration is done.
+		return pb.SagaStatus_SAGA_STATUS_UNSPECIFIED
 	default:
 		return pb.SagaStatus_SAGA_STATUS_UNSPECIFIED
 	}

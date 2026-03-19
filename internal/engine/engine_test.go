@@ -1058,3 +1058,143 @@ func TestEngineResume(t *testing.T) {
 		})
 	})
 }
+
+// seedSagaWithStatus creates a saga in the given status directly in the store.
+// Useful for abort tests that need a saga already past PENDING.
+func seedSagaWithStatus(t *testing.T, s *store.BoltStore, id string, status saga.SagaStatus) *saga.Execution {
+	t.Helper()
+	exec := &saga.Execution{
+		ID:        id,
+		Name:      "abort-test-saga",
+		Status:    saga.SagaStatusPending, // must Create as PENDING
+		StepDefs:  []saga.StepDefinition{{Name: "s1", ForwardURL: "http://localhost", CompensateURL: "http://localhost"}},
+		Steps:     []saga.StepExecution{{Name: "s1", Status: saga.StepStatusPending}},
+		Payload:   []byte(`{}`),
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := s.Create(context.Background(), exec); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if status != saga.SagaStatusPending {
+		exec.Status = status
+		if err := s.Update(context.Background(), exec); err != nil {
+			t.Fatalf("Update to %s: %v", status, err)
+		}
+	}
+	return exec
+}
+
+func TestEngineAbort(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Pending", func(t *testing.T) {
+		t.Parallel()
+		eng, s := newEngine(t)
+		seedSagaWithStatus(t, s, "abort-1", saga.SagaStatusPending)
+
+		got, err := eng.Abort(context.Background(), "abort-1")
+		if err != nil {
+			t.Fatalf("Abort: %v", err)
+		}
+		if got.Status != saga.SagaStatusAborted {
+			t.Errorf("Status: got %s, want ABORTED", got.Status)
+		}
+		if got.CompletedAt == nil {
+			t.Error("CompletedAt: want non-nil")
+		}
+		// Verify persisted.
+		persisted, err := s.Get(context.Background(), "abort-1")
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if persisted.Status != saga.SagaStatusAborted {
+			t.Errorf("persisted Status: got %s, want ABORTED", persisted.Status)
+		}
+	})
+
+	t.Run("Running", func(t *testing.T) {
+		t.Parallel()
+		eng, s := newEngine(t)
+		seedSagaWithStatus(t, s, "abort-2", saga.SagaStatusRunning)
+
+		got, err := eng.Abort(context.Background(), "abort-2")
+		if err != nil {
+			t.Fatalf("Abort: %v", err)
+		}
+		if got.Status != saga.SagaStatusAborted {
+			t.Errorf("Status: got %s, want ABORTED", got.Status)
+		}
+	})
+
+	t.Run("Compensating", func(t *testing.T) {
+		t.Parallel()
+		eng, s := newEngine(t)
+		seedSagaWithStatus(t, s, "abort-3", saga.SagaStatusCompensating)
+
+		got, err := eng.Abort(context.Background(), "abort-3")
+		if err != nil {
+			t.Fatalf("Abort: %v", err)
+		}
+		if got.Status != saga.SagaStatusAborted {
+			t.Errorf("Status: got %s, want ABORTED", got.Status)
+		}
+	})
+
+	t.Run("AlreadyAborted", func(t *testing.T) {
+		t.Parallel()
+		eng, s := newEngine(t)
+		seedSagaWithStatus(t, s, "abort-4", saga.SagaStatusAborted)
+
+		_, err := eng.Abort(context.Background(), "abort-4")
+		if !errors.Is(err, store.ErrAlreadyAborted) {
+			t.Errorf("Abort: got %v, want ErrAlreadyAborted", err)
+		}
+	})
+
+	t.Run("AlreadyCompleted", func(t *testing.T) {
+		t.Parallel()
+		eng, s := newEngine(t)
+		seedSagaWithStatus(t, s, "abort-5", saga.SagaStatusCompleted)
+
+		_, err := eng.Abort(context.Background(), "abort-5")
+		if !errors.Is(err, store.ErrAlreadyCompleted) {
+			t.Errorf("Abort: got %v, want ErrAlreadyCompleted", err)
+		}
+	})
+
+	t.Run("AlreadyFailed", func(t *testing.T) {
+		t.Parallel()
+		eng, s := newEngine(t)
+		seedSagaWithStatus(t, s, "abort-6", saga.SagaStatusFailed)
+
+		_, err := eng.Abort(context.Background(), "abort-6")
+		if !errors.Is(err, store.ErrAlreadyFailed) {
+			t.Errorf("Abort: got %v, want ErrAlreadyFailed", err)
+		}
+	})
+
+	t.Run("NotFound", func(t *testing.T) {
+		t.Parallel()
+		eng, s := newEngine(t)
+		_ = s
+
+		_, err := eng.Abort(context.Background(), "does-not-exist")
+		if err == nil {
+			t.Fatal("Abort: want error for non-existent saga, got nil")
+		}
+	})
+
+	t.Run("CancelledContext", func(t *testing.T) {
+		t.Parallel()
+		eng, s := newEngine(t)
+		_ = s
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		_, err := eng.Abort(ctx, "any-id")
+		if err == nil {
+			t.Fatal("Abort: want error for cancelled context, got nil")
+		}
+	})
+}

@@ -35,6 +35,10 @@ var (
 
 	// ErrAlreadyFailed is returned when the saga has already reached a failed terminal state.
 	ErrAlreadyFailed = errors.New("saga has already failed")
+
+	// ErrAlreadyAborted is returned when AbortSaga is called on a saga that has
+	// already been aborted.
+	ErrAlreadyAborted = errors.New("saga has already been aborted")
 )
 
 // BoltStore is a bbolt-backed implementation of Store.

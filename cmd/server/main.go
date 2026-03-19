@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -94,6 +96,39 @@ func run() error {
 		}
 		w.WriteHeader(http.StatusOK)
 	})
+	// Admin: forcibly abort a stuck saga.
+	// POST /admin/sagas/{id}/abort
+	// Returns 200 with {"id":"...","status":"ABORTED"} on success.
+	// Returns 404 if not found, 409 if already terminal, 500 otherwise.
+	mux.HandleFunc("POST /admin/sagas/{id}/abort", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if id == "" {
+			http.Error(w, "missing saga id", http.StatusBadRequest)
+			return
+		}
+		exec, err := eng.Abort(r.Context(), id)
+		if err != nil {
+			switch {
+			case errors.Is(err, store.ErrNotFound):
+				http.Error(w, "saga not found", http.StatusNotFound)
+			case errors.Is(err, store.ErrAlreadyCompleted),
+				errors.Is(err, store.ErrAlreadyFailed),
+				errors.Is(err, store.ErrAlreadyAborted):
+				http.Error(w, err.Error(), http.StatusConflict)
+			default:
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err = json.NewEncoder(w).Encode(map[string]string{
+			"id":     exec.ID,
+			"status": string(exec.Status),
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	})
+
 	mux.HandleFunc("/health/ready", func(w http.ResponseWriter, _ *http.Request) {
 		if ready.Load() {
 			w.WriteHeader(http.StatusOK)

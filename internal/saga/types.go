@@ -12,6 +12,10 @@ const (
 	SagaStatusCompensating SagaStatus = "COMPENSATING"
 	SagaStatusCompleted    SagaStatus = "COMPLETED"
 	SagaStatusFailed       SagaStatus = "FAILED"
+	// SagaStatusAborted is a terminal state set by the operator via AbortSaga.
+	// It is used to forcibly terminate a stuck saga (PENDING, RUNNING, or
+	// COMPENSATING) when the natural failure path is unavailable or too slow.
+	SagaStatusAborted SagaStatus = "ABORTED"
 )
 
 // StepStatus is the state of an individual step within a saga.

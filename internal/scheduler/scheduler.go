@@ -37,11 +37,11 @@ func New(s store.Store, eng Enginer) *Scheduler {
 // stderr but do not abort other resumes; a non-nil error is only returned if
 // the store itself cannot be queried.
 func (s *Scheduler) Run(ctx context.Context) error {
-	running, err := s.store.List(ctx, saga.SagaStatusRunning)
+	running, _, err := s.store.List(ctx, saga.SagaStatusRunning, 0, "")
 	if err != nil {
 		return fmt.Errorf("list running sagas: %w", err)
 	}
-	compensating, err := s.store.List(ctx, saga.SagaStatusCompensating)
+	compensating, _, err := s.store.List(ctx, saga.SagaStatusCompensating, 0, "")
 	if err != nil {
 		return fmt.Errorf("list compensating sagas: %w", err)
 	}

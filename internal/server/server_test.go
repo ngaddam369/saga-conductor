@@ -406,6 +406,78 @@ func TestServer(t *testing.T) {
 		}
 	})
 
+	t.Run("ListSagas/Pagination", func(t *testing.T) {
+		client, s := newTestServer(t, nil)
+		ctx := context.Background()
+
+		// Seed 5 sagas with deterministic IDs.
+		for _, id := range []string{"p1", "p2", "p3", "p4", "p5"} {
+			exec := &saga.Execution{
+				ID:        id,
+				Name:      "saga-" + id,
+				Status:    saga.SagaStatusCompleted,
+				CreatedAt: time.Now().UTC(),
+				Steps:     []saga.StepExecution{},
+				StepDefs:  []saga.StepDefinition{},
+			}
+			if err := s.Create(ctx, exec); err != nil {
+				t.Fatalf("seed %s: %v", id, err)
+			}
+		}
+
+		t.Run("page_size=2 returns token", func(t *testing.T) {
+			resp, err := client.ListSagas(ctx, &pb.ListSagasRequest{PageSize: 2})
+			if err != nil {
+				t.Fatalf("ListSagas: %v", err)
+			}
+			if len(resp.Sagas) != 2 {
+				t.Errorf("got %d sagas, want 2", len(resp.Sagas))
+			}
+			if resp.NextPageToken == "" {
+				t.Error("NextPageToken is empty, want non-empty")
+			}
+		})
+
+		t.Run("page_size=0 defaults to 100 — returns all 5", func(t *testing.T) {
+			resp, err := client.ListSagas(ctx, &pb.ListSagasRequest{PageSize: 0})
+			if err != nil {
+				t.Fatalf("ListSagas: %v", err)
+			}
+			if len(resp.Sagas) != 5 {
+				t.Errorf("got %d sagas, want 5", len(resp.Sagas))
+			}
+			if resp.NextPageToken != "" {
+				t.Errorf("NextPageToken = %q, want empty (all items fit in default page)", resp.NextPageToken)
+			}
+		})
+
+		t.Run("full pagination collects all items", func(t *testing.T) {
+			var all []*pb.SagaExecution
+			var token string
+			for {
+				resp, err := client.ListSagas(ctx, &pb.ListSagasRequest{PageSize: 2, PageToken: token})
+				if err != nil {
+					t.Fatalf("ListSagas: %v", err)
+				}
+				all = append(all, resp.Sagas...)
+				token = resp.NextPageToken
+				if token == "" {
+					break
+				}
+			}
+			if len(all) != 5 {
+				t.Errorf("paginated total: got %d, want 5", len(all))
+			}
+			seen := map[string]bool{}
+			for _, sg := range all {
+				if seen[sg.Id] {
+					t.Errorf("duplicate saga %s in paginated results", sg.Id)
+				}
+				seen[sg.Id] = true
+			}
+		})
+	})
+
 	t.Run("StartSaga", func(t *testing.T) {
 		tests := []struct {
 			name     string

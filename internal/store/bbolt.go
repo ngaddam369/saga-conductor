@@ -194,11 +194,29 @@ func (s *BoltStore) Ping(_ context.Context) error {
 	})
 }
 
-func (s *BoltStore) List(ctx context.Context, status saga.SagaStatus) ([]*saga.Execution, error) {
-	var results []*saga.Execution
+func (s *BoltStore) List(ctx context.Context, status saga.SagaStatus, pageSize int, pageToken string) ([]*saga.Execution, string, error) {
+	var (
+		results   []*saga.Execution
+		nextToken string
+	)
 
 	err := s.db.View(func(tx *bbolt.Tx) error {
-		return tx.Bucket(bucketSagas).ForEach(func(_, v []byte) error {
+		c := tx.Bucket(bucketSagas).Cursor()
+
+		// Position the cursor. pageToken is the ID of the last item returned
+		// on the previous page; Seek lands on it (or the next key if deleted),
+		// then we skip it with Next so we don't re-deliver it.
+		var k, v []byte
+		if pageToken != "" {
+			k, v = c.Seek([]byte(pageToken))
+			if k != nil && string(k) == pageToken {
+				k, v = c.Next() // skip the token itself
+			}
+		} else {
+			k, v = c.First()
+		}
+
+		for ; k != nil; k, v = c.Next() {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -206,11 +224,19 @@ func (s *BoltStore) List(ctx context.Context, status saga.SagaStatus) ([]*saga.E
 			if err := json.Unmarshal(v, &exec); err != nil {
 				return fmt.Errorf("unmarshal saga: %w", err)
 			}
-			if status == "" || exec.Status == status {
-				results = append(results, &exec)
+			if status != "" && exec.Status != status {
+				continue
 			}
-			return nil
-		})
+			results = append(results, &exec)
+			if pageSize > 0 && len(results) == pageSize {
+				// Return a token so callers can fetch the next page. If no
+				// further matching items exist the caller will receive an empty
+				// page with no token, signalling end-of-results.
+				nextToken = exec.ID
+				break
+			}
+		}
+		return nil
 	})
-	return results, err
+	return results, nextToken, err
 }

@@ -184,11 +184,20 @@ func (s *Server) GetSaga(ctx context.Context, req *pb.GetSagaRequest) (*pb.GetSa
 	return &pb.GetSagaResponse{Saga: toProto(exec)}, nil
 }
 
-// ListSagas returns all sagas, optionally filtered by status.
+// ListSagas returns sagas, optionally filtered by status, with cursor-based
+// pagination. page_size defaults to 100 and is capped at 1000.
 func (s *Server) ListSagas(ctx context.Context, req *pb.ListSagasRequest) (*pb.ListSagasResponse, error) {
 	filter := fromProtoStatus(req.Status)
 
-	executions, err := s.store.List(ctx, filter)
+	pageSize := int(req.PageSize)
+	if pageSize <= 0 {
+		pageSize = 100
+	}
+	if pageSize > 1000 {
+		pageSize = 1000
+	}
+
+	executions, nextToken, err := s.store.List(ctx, filter, pageSize, req.PageToken)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "list sagas: %v", err)
 	}
@@ -198,7 +207,7 @@ func (s *Server) ListSagas(ctx context.Context, req *pb.ListSagasRequest) (*pb.L
 		pbSagas[i] = toProto(e)
 	}
 
-	return &pb.ListSagasResponse{Sagas: pbSagas}, nil
+	return &pb.ListSagasResponse{Sagas: pbSagas, NextPageToken: nextToken}, nil
 }
 
 // AbortSaga forcibly marks a non-terminal saga ABORTED. No compensation is

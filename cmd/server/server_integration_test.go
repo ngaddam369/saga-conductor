@@ -787,6 +787,49 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("ListSagasPagination", func(t *testing.T) {
+		// Seed 5 sagas, then page through them 2 at a time and verify all are
+		// returned without duplicates.
+		client := productionGRPCServer(t, defaultTestConfig())
+		ctx := context.Background()
+
+		for i := range 5 {
+			_, err := client.CreateSaga(ctx, &pb.CreateSagaRequest{
+				Name: fmt.Sprintf("page-saga-%d", i),
+				Steps: []*pb.StepDefinition{
+					{Name: "step-1", ForwardUrl: "http://127.0.0.1:19999/fwd", CompensateUrl: "http://127.0.0.1:19999/comp"},
+				},
+			})
+			if err != nil {
+				t.Fatalf("CreateSaga %d: %v", i, err)
+			}
+		}
+
+		var all []*pb.SagaExecution
+		var token string
+		for {
+			resp, err := client.ListSagas(ctx, &pb.ListSagasRequest{PageSize: 2, PageToken: token})
+			if err != nil {
+				t.Fatalf("ListSagas: %v", err)
+			}
+			all = append(all, resp.Sagas...)
+			token = resp.NextPageToken
+			if token == "" {
+				break
+			}
+		}
+		if len(all) != 5 {
+			t.Errorf("paginated total: got %d, want 5", len(all))
+		}
+		seen := map[string]bool{}
+		for _, sg := range all {
+			if seen[sg.Id] {
+				t.Errorf("duplicate saga %s across pages", sg.Id)
+			}
+			seen[sg.Id] = true
+		}
+	})
+
 	t.Run("HealthReadTimeout", func(t *testing.T) {
 		// A client that opens a connection and never sends headers must be
 		// dropped by the server's ReadTimeout, not held open indefinitely.

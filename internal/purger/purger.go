@@ -20,7 +20,7 @@ const (
 
 // Store is the subset of store.Store that the purger requires.
 type Store interface {
-	List(ctx context.Context, status saga.SagaStatus) ([]*saga.Execution, error)
+	List(ctx context.Context, status saga.SagaStatus, pageSize int, pageToken string) ([]*saga.Execution, string, error)
 	Delete(ctx context.Context, id string) error
 }
 
@@ -112,7 +112,7 @@ func (p *Purger) Purge(ctx context.Context) (int, error) {
 	var firstErr error
 
 	for _, status := range []saga.SagaStatus{saga.SagaStatusCompleted, saga.SagaStatusFailed} {
-		execs, err := p.store.List(ctx, status)
+		execs, _, err := p.store.List(ctx, status, 0, "")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "purger: list %s sagas: %v\n", status, err)
 			if firstErr == nil {

@@ -103,10 +103,18 @@ message GetSagaResponse {
 message ListSagasRequest {
   // Optional filter by status; unspecified = return all.
   SagaStatus status = 1;
+  // Maximum number of sagas to return. Clamped to [1, 1000]; default 100 when
+  // zero or unset.
+  int32 page_size = 2;
+  // Opaque cursor returned as next_page_token by the previous call. Empty
+  // string requests the first page.
+  string page_token = 3;
 }
 
 message ListSagasResponse {
   repeated SagaExecution sagas = 1;
+  // Opaque cursor for the next page. Empty when this is the last page.
+  string next_page_token = 2;
 }
 
 message AbortSagaRequest {

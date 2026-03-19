@@ -206,7 +206,7 @@ func TestBoltStore(t *testing.T) {
 					}
 				}
 
-				got, err := s.List(ctx, tc.filterStatus)
+				got, _, err := s.List(ctx, tc.filterStatus, 0, "")
 				if err != nil {
 					t.Fatalf("List: %v", err)
 				}
@@ -281,7 +281,7 @@ func TestBoltStore(t *testing.T) {
 		canceled, cancel := context.WithCancel(context.Background())
 		cancel()
 
-		_, err := s.List(canceled, "")
+		_, _, err := s.List(canceled, "", 0, "")
 		if err == nil {
 			t.Fatal("expected error from canceled context, got nil")
 		}
@@ -297,7 +297,7 @@ func TestBoltStore(t *testing.T) {
 				return err
 			}},
 			{"List returns error", func(s *store.BoltStore) error {
-				_, err := s.List(context.Background(), "")
+				_, _, err := s.List(context.Background(), "", 0, "")
 				return err
 			}},
 		}
@@ -483,6 +483,146 @@ func TestBoltStore(t *testing.T) {
 			}
 			if err := s.Ping(context.Background()); err == nil {
 				t.Error("Ping: got nil, want error on closed store")
+			}
+		})
+	})
+
+	t.Run("ListPagination", func(t *testing.T) {
+		// Seed 5 sagas with deterministic IDs so the bbolt key order is known.
+		s := newTestStore(t)
+		ctx := context.Background()
+		ids := []string{"p1", "p2", "p3", "p4", "p5"}
+		for _, id := range ids {
+			if err := s.Create(ctx, newExec(id, "saga-"+id, saga.SagaStatusCompleted)); err != nil {
+				t.Fatalf("Create %s: %v", id, err)
+			}
+		}
+
+		t.Run("first page returns pageSize items and a token", func(t *testing.T) {
+			got, tok, err := s.List(ctx, "", 2, "")
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			if len(got) != 2 {
+				t.Errorf("got %d items, want 2", len(got))
+			}
+			if tok == "" {
+				t.Error("next_page_token is empty, want non-empty")
+			}
+			if tok != got[len(got)-1].ID {
+				t.Errorf("token %q != last ID %q", tok, got[len(got)-1].ID)
+			}
+		})
+
+		t.Run("second page continues from token", func(t *testing.T) {
+			first, tok, err := s.List(ctx, "", 2, "")
+			if err != nil {
+				t.Fatalf("first page: %v", err)
+			}
+			second, tok2, err := s.List(ctx, "", 2, tok)
+			if err != nil {
+				t.Fatalf("second page: %v", err)
+			}
+			// No overlap between pages.
+			firstIDs := map[string]bool{}
+			for _, e := range first {
+				firstIDs[e.ID] = true
+			}
+			for _, e := range second {
+				if firstIDs[e.ID] {
+					t.Errorf("saga %s appears on both pages", e.ID)
+				}
+			}
+			_ = tok2
+		})
+
+		t.Run("last page has empty token", func(t *testing.T) {
+			// pageSize=10 > 5 items — should return all and no token.
+			got, tok, err := s.List(ctx, "", 10, "")
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			if len(got) != 5 {
+				t.Errorf("got %d items, want 5", len(got))
+			}
+			if tok != "" {
+				t.Errorf("next_page_token = %q, want empty (last page)", tok)
+			}
+		})
+
+		t.Run("pageSize=0 returns all items", func(t *testing.T) {
+			got, tok, err := s.List(ctx, "", 0, "")
+			if err != nil {
+				t.Fatalf("List: %v", err)
+			}
+			if len(got) != 5 {
+				t.Errorf("got %d items, want 5", len(got))
+			}
+			if tok != "" {
+				t.Errorf("next_page_token = %q, want empty for unlimited list", tok)
+			}
+		})
+
+		t.Run("full iteration collects all items", func(t *testing.T) {
+			var all []*saga.Execution
+			var token string
+			for {
+				page, tok, err := s.List(ctx, "", 2, token)
+				if err != nil {
+					t.Fatalf("List: %v", err)
+				}
+				all = append(all, page...)
+				token = tok
+				if token == "" {
+					break
+				}
+			}
+			if len(all) != 5 {
+				t.Errorf("collected %d items across pages, want 5", len(all))
+			}
+			// No duplicates.
+			seen := map[string]bool{}
+			for _, e := range all {
+				if seen[e.ID] {
+					t.Errorf("duplicate saga %s in paginated results", e.ID)
+				}
+				seen[e.ID] = true
+			}
+		})
+
+		t.Run("filter + pagination only counts matching items", func(t *testing.T) {
+			sf := newTestStore(t)
+			// 3 COMPLETED, 2 FAILED
+			for i, st := range []saga.SagaStatus{
+				saga.SagaStatusCompleted, saga.SagaStatusFailed,
+				saga.SagaStatusCompleted, saga.SagaStatusFailed,
+				saga.SagaStatusCompleted,
+			} {
+				id := fmt.Sprintf("f%d", i)
+				if err := sf.Create(ctx, newExec(id, "saga-"+id, st)); err != nil {
+					t.Fatalf("Create: %v", err)
+				}
+			}
+			var all []*saga.Execution
+			var token string
+			for {
+				page, tok, err := sf.List(ctx, saga.SagaStatusCompleted, 2, token)
+				if err != nil {
+					t.Fatalf("List: %v", err)
+				}
+				all = append(all, page...)
+				token = tok
+				if token == "" {
+					break
+				}
+			}
+			if len(all) != 3 {
+				t.Errorf("paginated COMPLETED: got %d, want 3", len(all))
+			}
+			for _, e := range all {
+				if e.Status != saga.SagaStatusCompleted {
+					t.Errorf("saga %s has status %q, want COMPLETED", e.ID, e.Status)
+				}
 			}
 		})
 	})

@@ -22,9 +22,12 @@ type Store interface {
 	// for applying state-machine rules before calling Update.
 	Update(ctx context.Context, exec *saga.Execution) error
 
-	// List returns all stored saga executions. When status is non-empty only
-	// sagas whose status matches are returned.
-	List(ctx context.Context, status saga.SagaStatus) ([]*saga.Execution, error)
+	// List returns stored saga executions, optionally filtered by status and
+	// paginated. pageSize=0 means no limit (returns all matching items).
+	// pageToken is the ID of the last item returned by the previous call; empty
+	// means start from the beginning. Returns the next page token (empty when
+	// this is the last page).
+	List(ctx context.Context, status saga.SagaStatus, pageSize int, pageToken string) ([]*saga.Execution, string, error)
 
 	// TransitionToRunning atomically checks that the saga is PENDING and, if so,
 	// writes it to RUNNING and returns the updated execution. It returns

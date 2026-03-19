@@ -32,7 +32,6 @@ const (
 	SagaStatus_SAGA_STATUS_COMPLETED    SagaStatus = 4
 	SagaStatus_SAGA_STATUS_FAILED       SagaStatus = 5
 	// SAGA_STATUS_ABORTED is set by the AbortSaga RPC. Terminal state.
-	// NOTE: pb.go regeneration is deferred until the proto toolchain is set up.
 	SagaStatus_SAGA_STATUS_ABORTED SagaStatus = 6
 )
 
@@ -711,7 +710,13 @@ func (x *GetSagaResponse) GetSaga() *SagaExecution {
 type ListSagasRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Optional filter by status; unspecified = return all.
-	Status        SagaStatus `protobuf:"varint,1,opt,name=status,proto3,enum=saga.v1.SagaStatus" json:"status,omitempty"`
+	Status SagaStatus `protobuf:"varint,1,opt,name=status,proto3,enum=saga.v1.SagaStatus" json:"status,omitempty"`
+	// Maximum number of sagas to return. Clamped to [1, 1000]; default 100 when
+	// zero or unset.
+	PageSize int32 `protobuf:"varint,2,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
+	// Opaque cursor returned as next_page_token by the previous call. Empty
+	// string requests the first page.
+	PageToken     string `protobuf:"bytes,3,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -753,9 +758,25 @@ func (x *ListSagasRequest) GetStatus() SagaStatus {
 	return SagaStatus_SAGA_STATUS_UNSPECIFIED
 }
 
+func (x *ListSagasRequest) GetPageSize() int32 {
+	if x != nil {
+		return x.PageSize
+	}
+	return 0
+}
+
+func (x *ListSagasRequest) GetPageToken() string {
+	if x != nil {
+		return x.PageToken
+	}
+	return ""
+}
+
 type ListSagasResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Sagas         []*SagaExecution       `protobuf:"bytes,1,rep,name=sagas,proto3" json:"sagas,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Sagas []*SagaExecution       `protobuf:"bytes,1,rep,name=sagas,proto3" json:"sagas,omitempty"`
+	// Opaque cursor for the next page. Empty when this is the last page.
+	NextPageToken string `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -795,6 +816,13 @@ func (x *ListSagasResponse) GetSagas() []*SagaExecution {
 		return x.Sagas
 	}
 	return nil
+}
+
+func (x *ListSagasResponse) GetNextPageToken() string {
+	if x != nil {
+		return x.NextPageToken
+	}
+	return ""
 }
 
 type AbortSagaRequest struct {
@@ -931,11 +959,15 @@ const file_proto_saga_v1_saga_proto_rawDesc = "" +
 	"\x0eGetSagaRequest\x12\x17\n" +
 	"\asaga_id\x18\x01 \x01(\tR\x06sagaId\"=\n" +
 	"\x0fGetSagaResponse\x12*\n" +
-	"\x04saga\x18\x01 \x01(\v2\x16.saga.v1.SagaExecutionR\x04saga\"?\n" +
+	"\x04saga\x18\x01 \x01(\v2\x16.saga.v1.SagaExecutionR\x04saga\"{\n" +
 	"\x10ListSagasRequest\x12+\n" +
-	"\x06status\x18\x01 \x01(\x0e2\x13.saga.v1.SagaStatusR\x06status\"A\n" +
+	"\x06status\x18\x01 \x01(\x0e2\x13.saga.v1.SagaStatusR\x06status\x12\x1b\n" +
+	"\tpage_size\x18\x02 \x01(\x05R\bpageSize\x12\x1d\n" +
+	"\n" +
+	"page_token\x18\x03 \x01(\tR\tpageToken\"i\n" +
 	"\x11ListSagasResponse\x12,\n" +
-	"\x05sagas\x18\x01 \x03(\v2\x16.saga.v1.SagaExecutionR\x05sagas\"+\n" +
+	"\x05sagas\x18\x01 \x03(\v2\x16.saga.v1.SagaExecutionR\x05sagas\x12&\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"+\n" +
 	"\x10AbortSagaRequest\x12\x17\n" +
 	"\asaga_id\x18\x01 \x01(\tR\x06sagaId\"?\n" +
 	"\x11AbortSagaResponse\x12*\n" +

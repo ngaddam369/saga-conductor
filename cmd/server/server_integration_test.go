@@ -30,12 +30,22 @@ import (
 // (message limits + keepalive) and returns a connected client.
 func productionGRPCServer(t *testing.T, cfg config) pb.SagaOrchestratorClient {
 	t.Helper()
+	client, _ := productionGRPCServerWithEngine(t, cfg)
+	return client
+}
+
+// productionGRPCServerWithEngine is like productionGRPCServer but also returns
+// the underlying Engine so tests can call Drain() directly.
+func productionGRPCServerWithEngine(t *testing.T, cfg config) (pb.SagaOrchestratorClient, *engine.Engine) {
+	t.Helper()
 
 	s, err := store.NewBoltStore(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("NewBoltStore: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
+
+	eng := engine.New(s)
 
 	grpcSrv := grpc.NewServer(
 		grpc.MaxRecvMsgSize(cfg.grpcMaxRecvMB*1024*1024),
@@ -50,7 +60,7 @@ func productionGRPCServer(t *testing.T, cfg config) pb.SagaOrchestratorClient {
 			PermitWithoutStream: true,
 		}),
 	)
-	pb.RegisterSagaOrchestratorServer(grpcSrv, server.New(s, engine.New(s)))
+	pb.RegisterSagaOrchestratorServer(grpcSrv, server.New(s, eng))
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -67,7 +77,7 @@ func productionGRPCServer(t *testing.T, cfg config) pb.SagaOrchestratorClient {
 	}
 	t.Cleanup(func() { _ = conn.Close() })
 
-	return pb.NewSagaOrchestratorClient(conn)
+	return pb.NewSagaOrchestratorClient(conn), eng
 }
 
 // productionHealthServer starts the health HTTP server as production does
@@ -827,6 +837,85 @@ func TestIntegration(t *testing.T) {
 				t.Errorf("duplicate saga %s across pages", sg.Id)
 			}
 			seen[sg.Id] = true
+		}
+	})
+
+	t.Run("GracefulDrain", func(t *testing.T) {
+		// While a StartSaga call is in-flight, simulate the SIGTERM shutdown
+		// sequence by calling eng.Drain. Verify:
+		//   (a) Drain waits for the in-flight StartSaga to complete normally.
+		//   (b) A new StartSaga issued after Drain returns codes.Unavailable.
+		t.Setenv("STEP_MAX_RETRIES", "0")
+
+		hit := make(chan struct{})
+		release := make(chan struct{})
+		stepSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			close(hit)
+			<-release
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(stepSrv.Close)
+
+		client, eng := productionGRPCServerWithEngine(t, defaultTestConfig())
+
+		created, err := client.CreateSaga(context.Background(), &pb.CreateSagaRequest{
+			Name: "drain-saga",
+			Steps: []*pb.StepDefinition{
+				{Name: "step-1", ForwardUrl: stepSrv.URL, CompensateUrl: stepSrv.URL},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateSaga: %v", err)
+		}
+
+		startDone := make(chan error, 1)
+		go func() {
+			_, err := client.StartSaga(context.Background(), &pb.StartSagaRequest{SagaId: created.Saga.Id})
+			startDone <- err
+		}()
+
+		// Wait until the step server receives the request — Start is past the
+		// inflight registration at this point.
+		<-hit
+
+		drainDone := make(chan []string, 1)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			drainDone <- eng.Drain(ctx)
+		}()
+
+		// Give Drain a moment to block on the WaitGroup.
+		time.Sleep(20 * time.Millisecond)
+		select {
+		case result := <-drainDone:
+			t.Fatalf("Drain returned early with interrupted IDs: %v", result)
+		default:
+		}
+
+		close(release) // let the step succeed and StartSaga return
+
+		interrupted := <-drainDone
+		if len(interrupted) != 0 {
+			t.Errorf("Drain: unexpected interrupted IDs: %v", interrupted)
+		}
+		if err := <-startDone; err != nil {
+			t.Errorf("StartSaga: %v", err)
+		}
+
+		// After Drain, a new StartSaga must be rejected with Unavailable.
+		created2, err := client.CreateSaga(context.Background(), &pb.CreateSagaRequest{
+			Name: "drain-saga-2",
+			Steps: []*pb.StepDefinition{
+				{Name: "step-1", ForwardUrl: stepSrv.URL, CompensateUrl: stepSrv.URL},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateSaga 2: %v", err)
+		}
+		_, err = client.StartSaga(context.Background(), &pb.StartSagaRequest{SagaId: created2.Saga.Id})
+		if code := status.Code(err); code != codes.Unavailable {
+			t.Errorf("StartSaga after drain: got %v, want Unavailable", code)
 		}
 	})
 

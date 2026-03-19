@@ -176,6 +176,19 @@ func run() error {
 	drainSecs := getEnvInt("SHUTDOWN_DRAIN_SECONDS", 5)
 	time.Sleep(time.Duration(drainSecs) * time.Second)
 
+	// Wait for in-flight sagas to complete before tearing down the gRPC server.
+	// If they don't finish within the saga shutdown timeout, log the interrupted
+	// IDs — the scheduler will resume them on the next startup.
+	sagaShutdownTimeout := time.Duration(getEnvInt("SHUTDOWN_SAGA_TIMEOUT_SECONDS", 30)) * time.Second
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), sagaShutdownTimeout)
+	interrupted := eng.Drain(drainCtx)
+	drainCancel()
+	if len(interrupted) > 0 {
+		fmt.Fprintf(os.Stderr,
+			"saga-conductor: shutdown timeout reached; %d saga(s) interrupted and will be resumed on next startup: %v\n",
+			len(interrupted), interrupted)
+	}
+
 	grpcServer.GracefulStop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

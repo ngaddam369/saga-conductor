@@ -7,6 +7,7 @@ package engine
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
@@ -14,11 +15,16 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ngaddam369/saga-conductor/internal/saga"
 	"github.com/ngaddam369/saga-conductor/internal/store"
 )
+
+// ErrDraining is returned by Start when the engine is draining for shutdown.
+var ErrDraining = errors.New("engine draining for shutdown")
 
 const (
 	storeMaxRetries     = 3
@@ -54,6 +60,14 @@ type Engine struct {
 	defaultMaxRetries  int
 	defaultRetryBaseMs int
 	sagaTimeoutSecs    int
+
+	// Graceful-shutdown fields.
+	// draining is set by Drain() to prevent new Start() calls.
+	// inflightWg counts active Start() goroutines.
+	// inflight maps saga ID → struct{} for the in-flight set (used for logging on timeout).
+	draining   atomic.Bool
+	inflightWg sync.WaitGroup
+	inflight   sync.Map
 }
 
 // New returns an Engine backed by the given store.
@@ -433,10 +447,48 @@ compensate:
 // entire forward execution. On timeout the current step fails immediately
 // via context cancellation, then compensation runs on a fresh context so
 // previously succeeded steps can still be rolled back.
+// Drain signals the engine to stop accepting new Start calls and waits for all
+// in-flight sagas to finish. If ctx expires before they all finish, Drain
+// returns the IDs of any sagas still running at that point; the background
+// scheduler will resume them on next startup.
+func (e *Engine) Drain(ctx context.Context) []string {
+	e.draining.Store(true)
+
+	done := make(chan struct{})
+	go func() {
+		e.inflightWg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		var interrupted []string
+		e.inflight.Range(func(k, _ any) bool {
+			if id, ok := k.(string); ok {
+				interrupted = append(interrupted, id)
+			}
+			return true
+		})
+		return interrupted
+	}
+}
+
 func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) {
+	if e.draining.Load() {
+		return nil, ErrDraining
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("context already done: %w", err)
 	}
+
+	e.inflight.Store(id, struct{}{})
+	e.inflightWg.Add(1)
+	defer func() {
+		e.inflight.Delete(id)
+		e.inflightWg.Done()
+	}()
 
 	exec, err := e.store.TransitionToRunning(ctx, id, time.Now().UTC())
 	if err != nil {

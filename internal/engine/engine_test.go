@@ -874,6 +874,109 @@ func TestEngine(t *testing.T) {
 			t.Errorf("took %v; expected saga timeout of 1s to abort quickly", elapsed)
 		}
 	})
+
+	t.Run("DrainWaitsForInflight", func(t *testing.T) {
+		eng, s := newEngine(t)
+
+		hit := make(chan struct{})
+		release := make(chan struct{})
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			close(hit)
+			<-release
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(srv.Close)
+
+		seedSaga(t, s, []saga.StepDefinition{
+			{Name: "step-1", ForwardURL: srv.URL, CompensateURL: srv.URL},
+		})
+
+		startDone := make(chan error, 1)
+		go func() {
+			_, err := eng.Start(context.Background(), "saga-1")
+			startDone <- err
+		}()
+
+		// Wait until Start is inside callHTTP — past inflight registration.
+		<-hit
+
+		drainDone := make(chan []string, 1)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			drainDone <- eng.Drain(ctx)
+		}()
+
+		// Give Drain a moment to block on the WaitGroup.
+		time.Sleep(20 * time.Millisecond)
+		select {
+		case <-drainDone:
+			t.Fatal("Drain returned before in-flight saga completed")
+		default:
+		}
+
+		close(release) // let the step succeed
+
+		interrupted := <-drainDone
+		if len(interrupted) != 0 {
+			t.Errorf("Drain: unexpected interrupted IDs: %v", interrupted)
+		}
+		if err := <-startDone; err != nil {
+			t.Errorf("Start: %v", err)
+		}
+	})
+
+	t.Run("DrainTimeoutReturnsIDs", func(t *testing.T) {
+		eng, s := newEngine(t)
+
+		hit := make(chan struct{})
+		release := make(chan struct{})
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			close(hit)
+			<-release
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(srv.Close)
+
+		seedSaga(t, s, []saga.StepDefinition{
+			{Name: "step-1", ForwardURL: srv.URL, CompensateURL: srv.URL},
+		})
+
+		startDone := make(chan error, 1)
+		go func() {
+			_, err := eng.Start(context.Background(), "saga-1")
+			startDone <- err
+		}()
+
+		<-hit // Start is past inflight registration
+
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+		interrupted := eng.Drain(ctx)
+
+		if len(interrupted) != 1 || interrupted[0] != "saga-1" {
+			t.Errorf("Drain: want [saga-1], got %v", interrupted)
+		}
+
+		close(release) // let Start finish cleanly
+		<-startDone
+	})
+
+	t.Run("DrainRejectsNewStart", func(t *testing.T) {
+		eng, s := newEngine(t)
+		seedSaga(t, s, []saga.StepDefinition{})
+
+		// Drain with no in-flight sagas completes immediately.
+		interrupted := eng.Drain(context.Background())
+		if len(interrupted) != 0 {
+			t.Errorf("Drain: unexpected interrupted IDs: %v", interrupted)
+		}
+
+		_, err := eng.Start(context.Background(), "saga-1")
+		if !errors.Is(err, engine.ErrDraining) {
+			t.Errorf("Start after Drain: got %v, want ErrDraining", err)
+		}
+	})
 }
 
 func TestEngineResume(t *testing.T) {

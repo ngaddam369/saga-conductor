@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/ngaddam369/saga-conductor/internal/engine"
 	"github.com/ngaddam369/saga-conductor/internal/saga"
 	"github.com/ngaddam369/saga-conductor/internal/store"
 	pb "github.com/ngaddam369/saga-conductor/proto/saga/v1"
@@ -160,6 +161,9 @@ func (s *Server) StartSaga(ctx context.Context, req *pb.StartSagaRequest) (*pb.S
 		}
 		if errors.Is(err, store.ErrAlreadyAborted) {
 			return nil, status.Error(codes.FailedPrecondition, "saga has already been aborted")
+		}
+		if errors.Is(err, engine.ErrDraining) {
+			return nil, status.Error(codes.Unavailable, "server is shutting down")
 		}
 		return nil, status.Errorf(codes.Internal, "start saga: %v", err)
 	}

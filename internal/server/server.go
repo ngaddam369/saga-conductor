@@ -37,9 +37,10 @@ func validateStepURL(raw string) error {
 	return nil
 }
 
-// Engine is the interface the server uses to start saga executions.
+// Engine is the interface the server uses to start and abort saga executions.
 type Engine interface {
 	Start(ctx context.Context, id string) (*saga.Execution, error)
+	Abort(ctx context.Context, id string) (*saga.Execution, error)
 }
 
 // Server implements the gRPC SagaOrchestrator service.
@@ -157,6 +158,9 @@ func (s *Server) StartSaga(ctx context.Context, req *pb.StartSagaRequest) (*pb.S
 		if errors.Is(err, store.ErrAlreadyFailed) {
 			return nil, status.Error(codes.FailedPrecondition, "saga has already failed")
 		}
+		if errors.Is(err, store.ErrAlreadyAborted) {
+			return nil, status.Error(codes.FailedPrecondition, "saga has already been aborted")
+		}
 		return nil, status.Errorf(codes.Internal, "start saga: %v", err)
 	}
 
@@ -195,6 +199,30 @@ func (s *Server) ListSagas(ctx context.Context, req *pb.ListSagasRequest) (*pb.L
 	}
 
 	return &pb.ListSagasResponse{Sagas: pbSagas}, nil
+}
+
+// AbortSaga forcibly marks a non-terminal saga ABORTED. No compensation is
+// triggered. Returns NotFound if the saga does not exist, AlreadyExists (409)
+// mapped to FailedPrecondition if already in a terminal state.
+func (s *Server) AbortSaga(ctx context.Context, req *pb.AbortSagaRequest) (*pb.AbortSagaResponse, error) {
+	if req.SagaId == "" {
+		return nil, status.Error(codes.InvalidArgument, "saga_id is required")
+	}
+
+	exec, err := s.engine.Abort(ctx, req.SagaId)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, status.Errorf(codes.NotFound, "saga %s not found", req.SagaId)
+		}
+		if errors.Is(err, store.ErrAlreadyCompleted) ||
+			errors.Is(err, store.ErrAlreadyFailed) ||
+			errors.Is(err, store.ErrAlreadyAborted) {
+			return nil, status.Errorf(codes.FailedPrecondition, "%v", err)
+		}
+		return nil, status.Errorf(codes.Internal, "abort saga: %v", err)
+	}
+
+	return &pb.AbortSagaResponse{Saga: toProto(exec)}, nil
 }
 
 // ── Conversion helpers ────────────────────────────────────────────────────────

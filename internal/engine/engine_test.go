@@ -213,6 +213,7 @@ func TestEngine(t *testing.T) {
 			{saga.SagaStatusCompensating, store.ErrAlreadyCompensating},
 			{saga.SagaStatusCompleted, store.ErrAlreadyCompleted},
 			{saga.SagaStatusFailed, store.ErrAlreadyFailed},
+			{saga.SagaStatusAborted, store.ErrAlreadyAborted},
 		}
 		for _, tc := range tests {
 			t.Run(string(tc.status), func(t *testing.T) {

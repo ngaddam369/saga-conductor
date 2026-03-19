@@ -20,10 +20,11 @@ import (
 	pb "github.com/ngaddam369/saga-conductor/proto/saga/v1"
 )
 
-// mockEngine lets tests control what Start returns without running real HTTP.
+// mockEngine lets tests control what Start and Abort return without running real HTTP.
 type mockEngine struct {
-	result *saga.Execution
-	err    error
+	result   *saga.Execution
+	err      error
+	abortErr error
 }
 
 func (m *mockEngine) Start(_ context.Context, id string) (*saga.Execution, error) {
@@ -42,6 +43,10 @@ func (m *mockEngine) Start(_ context.Context, id string) (*saga.Execution, error
 		StepDefs:  []saga.StepDefinition{},
 		CreatedAt: time.Now().UTC(),
 	}, nil
+}
+
+func (m *mockEngine) Abort(_ context.Context, _ string) (*saga.Execution, error) {
+	return nil, m.abortErr
 }
 
 func newTestServer(t *testing.T, eng server.Engine) (pb.SagaOrchestratorClient, *store.BoltStore) {
@@ -285,6 +290,21 @@ func TestServer(t *testing.T) {
 				}},
 				wantCode: codes.OK,
 			},
+			{
+				name:     "saga_timeout_seconds too large",
+				req:      &pb.CreateSagaRequest{Name: "saga", Steps: validSteps(), SagaTimeoutSeconds: 86401},
+				wantCode: codes.InvalidArgument,
+			},
+			{
+				name:     "saga_timeout_seconds=0 allowed (use default)",
+				req:      &pb.CreateSagaRequest{Name: "saga", Steps: validSteps(), SagaTimeoutSeconds: 0},
+				wantCode: codes.OK,
+			},
+			{
+				name:     "saga_timeout_seconds=86400 at boundary",
+				req:      &pb.CreateSagaRequest{Name: "saga", Steps: validSteps(), SagaTimeoutSeconds: 86400},
+				wantCode: codes.OK,
+			},
 		}
 
 		for _, tc := range tests {
@@ -446,12 +466,70 @@ func TestServer(t *testing.T) {
 				engine:   &mockEngine{err: fmt.Errorf("transition: %w", store.ErrAlreadyFailed)},
 				wantCode: codes.FailedPrecondition,
 			},
+			{
+				name:     "ErrAlreadyAborted → codes.FailedPrecondition",
+				sagaID:   "saga-1",
+				engine:   &mockEngine{err: fmt.Errorf("transition: %w", store.ErrAlreadyAborted)},
+				wantCode: codes.FailedPrecondition,
+			},
 		}
 
 		for _, tc := range tests {
 			t.Run(tc.name, func(t *testing.T) {
 				client, _ := newTestServer(t, tc.engine)
 				_, err := client.StartSaga(context.Background(), &pb.StartSagaRequest{SagaId: tc.sagaID})
+				if code := status.Code(err); code != tc.wantCode {
+					t.Errorf("code: got %v, want %v (err=%v)", code, tc.wantCode, err)
+				}
+			})
+		}
+	})
+
+	t.Run("AbortSaga", func(t *testing.T) {
+		t.Run("empty saga_id", func(t *testing.T) {
+			client, _ := newTestServer(t, nil)
+			_, err := client.AbortSaga(context.Background(), &pb.AbortSagaRequest{SagaId: ""})
+			if code := status.Code(err); code != codes.InvalidArgument {
+				t.Errorf("code: got %v, want InvalidArgument", code)
+			}
+		})
+
+		t.Run("pending saga aborted successfully", func(t *testing.T) {
+			client, s := newTestServer(t, nil)
+			exec := &saga.Execution{
+				ID:        "abort-pending",
+				Name:      "saga",
+				Status:    saga.SagaStatusPending,
+				Steps:     []saga.StepExecution{},
+				StepDefs:  []saga.StepDefinition{},
+				CreatedAt: time.Now().UTC(),
+			}
+			if err := s.Create(context.Background(), exec); err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			resp, err := client.AbortSaga(context.Background(), &pb.AbortSagaRequest{SagaId: "abort-pending"})
+			if err != nil {
+				t.Fatalf("AbortSaga: %v", err)
+			}
+			if resp.Saga.Status != pb.SagaStatus_SAGA_STATUS_ABORTED {
+				t.Errorf("status: got %v, want SAGA_STATUS_ABORTED", resp.Saga.Status)
+			}
+		})
+
+		errorCases := []struct {
+			name     string
+			abortErr error
+			wantCode codes.Code
+		}{
+			{"not found → NotFound", store.ErrNotFound, codes.NotFound},
+			{"already completed → FailedPrecondition", store.ErrAlreadyCompleted, codes.FailedPrecondition},
+			{"already failed → FailedPrecondition", store.ErrAlreadyFailed, codes.FailedPrecondition},
+			{"already aborted → FailedPrecondition", store.ErrAlreadyAborted, codes.FailedPrecondition},
+		}
+		for _, tc := range errorCases {
+			t.Run(tc.name, func(t *testing.T) {
+				client, _ := newTestServer(t, &mockEngine{abortErr: tc.abortErr})
+				_, err := client.AbortSaga(context.Background(), &pb.AbortSagaRequest{SagaId: "x"})
 				if code := status.Code(err); code != tc.wantCode {
 					t.Errorf("code: got %v, want %v (err=%v)", code, tc.wantCode, err)
 				}

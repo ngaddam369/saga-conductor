@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -127,6 +128,11 @@ func defaultTestConfig() config {
 		healthWriteTimeoutSecs:   5,
 		healthIdleTimeoutSecs:    60,
 	}
+}
+
+// contains reports whether b contains the UTF-8 substring sub.
+func contains(b []byte, sub string) bool {
+	return bytes.Contains(b, []byte(sub))
 }
 
 func TestIntegration(t *testing.T) {
@@ -640,6 +646,144 @@ func TestIntegration(t *testing.T) {
 		// /health/live must remain 200 throughout — only readiness is affected.
 		if got := get(t, "/health/live"); got != http.StatusOK {
 			t.Errorf("live after drain: got %d, want 200", got)
+		}
+	})
+
+	t.Run("AbortSaga", func(t *testing.T) {
+		t.Run("aborts pending saga via gRPC", func(t *testing.T) {
+			client := productionGRPCServer(t, defaultTestConfig())
+
+			created, err := client.CreateSaga(context.Background(), &pb.CreateSagaRequest{
+				Name: "abort-pending",
+				Steps: []*pb.StepDefinition{
+					{Name: "step-1", ForwardUrl: "http://127.0.0.1:19999/fwd", CompensateUrl: "http://127.0.0.1:19999/comp"},
+				},
+			})
+			if err != nil {
+				t.Fatalf("CreateSaga: %v", err)
+			}
+
+			resp, err := client.AbortSaga(context.Background(), &pb.AbortSagaRequest{SagaId: created.Saga.Id})
+			if err != nil {
+				t.Fatalf("AbortSaga: %v", err)
+			}
+			if resp.Saga.Status != pb.SagaStatus_SAGA_STATUS_ABORTED {
+				t.Errorf("status: got %v, want SAGA_STATUS_ABORTED", resp.Saga.Status)
+			}
+
+			// GetSaga must also reflect ABORTED.
+			got, err := client.GetSaga(context.Background(), &pb.GetSagaRequest{SagaId: created.Saga.Id})
+			if err != nil {
+				t.Fatalf("GetSaga after abort: %v", err)
+			}
+			if got.Saga.Status != pb.SagaStatus_SAGA_STATUS_ABORTED {
+				t.Errorf("GetSaga status: got %v, want SAGA_STATUS_ABORTED", got.Saga.Status)
+			}
+		})
+
+		t.Run("aborting terminal saga returns FailedPrecondition", func(t *testing.T) {
+			step := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(step.Close)
+
+			client := productionGRPCServer(t, defaultTestConfig())
+
+			created, err := client.CreateSaga(context.Background(), &pb.CreateSagaRequest{
+				Name: "abort-completed",
+				Steps: []*pb.StepDefinition{
+					{Name: "step-1", ForwardUrl: step.URL, CompensateUrl: step.URL},
+				},
+			})
+			if err != nil {
+				t.Fatalf("CreateSaga: %v", err)
+			}
+			if _, err = client.StartSaga(context.Background(), &pb.StartSagaRequest{SagaId: created.Saga.Id}); err != nil {
+				t.Fatalf("StartSaga: %v", err)
+			}
+
+			_, err = client.AbortSaga(context.Background(), &pb.AbortSagaRequest{SagaId: created.Saga.Id})
+			if code := status.Code(err); code != codes.FailedPrecondition {
+				t.Errorf("code: got %v, want FailedPrecondition", code)
+			}
+		})
+	})
+
+	t.Run("PerSagaTimeout", func(t *testing.T) {
+		// saga_timeout_seconds in CreateSagaRequest must override the global
+		// SAGA_TIMEOUT_SECONDS env var for this specific saga.
+		t.Setenv("SAGA_TIMEOUT_SECONDS", "30") // global is 30s — per-saga is 1s
+		t.Setenv("STEP_TIMEOUT_SECONDS", "60")
+		t.Setenv("STEP_MAX_RETRIES", "0")
+
+		done := make(chan struct{})
+		hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			<-done
+		}))
+		t.Cleanup(func() { close(done); hang.Close() })
+
+		client := productionGRPCServer(t, defaultTestConfig())
+
+		created, err := client.CreateSaga(context.Background(), &pb.CreateSagaRequest{
+			Name:               "per-saga-timeout",
+			SagaTimeoutSeconds: 1, // override global 30s → abort in 1s
+			Steps: []*pb.StepDefinition{
+				{Name: "step-1", ForwardUrl: hang.URL, CompensateUrl: hang.URL},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateSaga: %v", err)
+		}
+
+		start := time.Now()
+		_, startErr := client.StartSaga(context.Background(), &pb.StartSagaRequest{SagaId: created.Saga.Id})
+		elapsed := time.Since(start)
+
+		if st, ok := status.FromError(startErr); !ok || st.Code() != codes.DeadlineExceeded {
+			t.Errorf("StartSaga error code: got %v, want DeadlineExceeded", startErr)
+		}
+		if elapsed > 5*time.Second {
+			t.Errorf("took %v; per-saga timeout of 1s should have aborted quickly", elapsed)
+		}
+	})
+
+	t.Run("ErrorDetailInResponse", func(t *testing.T) {
+		// A failed step must populate error_detail bytes in the gRPC response.
+		t.Setenv("STEP_MAX_RETRIES", "0")
+
+		stepSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte("business logic rejected"))
+		}))
+		t.Cleanup(stepSrv.Close)
+
+		client := productionGRPCServer(t, defaultTestConfig())
+
+		created, err := client.CreateSaga(context.Background(), &pb.CreateSagaRequest{
+			Name: "error-detail-saga",
+			Steps: []*pb.StepDefinition{
+				{Name: "step-1", ForwardUrl: stepSrv.URL, CompensateUrl: stepSrv.URL},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateSaga: %v", err)
+		}
+
+		started, err := client.StartSaga(context.Background(), &pb.StartSagaRequest{SagaId: created.Saga.Id})
+		if err != nil {
+			t.Fatalf("StartSaga: %v", err)
+		}
+		if started.Saga.Status != pb.SagaStatus_SAGA_STATUS_FAILED {
+			t.Fatalf("status: got %v, want FAILED", started.Saga.Status)
+		}
+
+		step := started.Saga.Steps[0]
+		if len(step.ErrorDetail) == 0 {
+			t.Fatal("ErrorDetail is empty; want JSON-encoded StepError")
+		}
+		// Sanity-check that it is valid JSON with expected fields.
+		if !contains(step.ErrorDetail, "http_status_code") {
+			t.Errorf("ErrorDetail JSON missing http_status_code field: %s", step.ErrorDetail)
 		}
 	})
 

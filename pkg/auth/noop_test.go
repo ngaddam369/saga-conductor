@@ -10,7 +10,7 @@ import (
 func TestNoopTokenSource(t *testing.T) {
 	t.Parallel()
 	var ts auth.NoopTokenSource
-	tok, err := ts.Token(context.Background(), "http://example.com/step")
+	tok, err := ts.Token(context.Background(), "http://example.com/step", "")
 	if err != nil {
 		t.Fatalf("Token: unexpected error: %v", err)
 	}

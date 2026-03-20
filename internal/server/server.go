@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -110,6 +111,9 @@ func (s *Server) CreateSaga(ctx context.Context, req *pb.CreateSagaRequest) (*pb
 			return nil, status.Errorf(codes.InvalidArgument, "step %d: retry_backoff_ms must be in [0, 60000]", i)
 		}
 
+		if sd.TargetSpiffeId != "" && !strings.HasPrefix(sd.TargetSpiffeId, "spiffe://") {
+			return nil, status.Errorf(codes.InvalidArgument, "step %d: target_spiffe_id must start with spiffe://", i)
+		}
 		stepDefs[i] = saga.StepDefinition{
 			Name:           sd.Name,
 			ForwardURL:     sd.ForwardUrl,
@@ -117,6 +121,7 @@ func (s *Server) CreateSaga(ctx context.Context, req *pb.CreateSagaRequest) (*pb
 			TimeoutSeconds: int(sd.TimeoutSeconds),
 			MaxRetries:     int(sd.MaxRetries),
 			RetryBackoffMs: int(sd.RetryBackoffMs),
+			TargetSPIFFEID: sd.TargetSpiffeId,
 		}
 		stepExecs[i] = saga.StepExecution{
 			Name:   sd.Name,

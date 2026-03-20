@@ -54,6 +54,11 @@ type StepDefinition struct {
 	// Subsequent retries use base * 2^attempt + jitter. Zero means the engine
 	// default is used.
 	RetryBackoffMs int `json:"retry_backoff_ms,omitempty"`
+	// TargetSPIFFEID is the SPIFFE ID of the target service for this step.
+	// When non-empty and AUTH_TYPE=svid-exchange, the orchestrator fetches a
+	// scoped JWT from the svid-exchange service and attaches it as the
+	// Authorization: Bearer header on the outbound HTTP call.
+	TargetSPIFFEID string `json:"target_spiffe_id,omitempty"`
 }
 
 // StepError holds structured context for a failed step HTTP call.

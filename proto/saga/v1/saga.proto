@@ -51,6 +51,11 @@ message StepDefinition {
   // Base backoff in milliseconds for retry delays (0 = server default).
   // Valid range: 0–60000 (1 minute).
   int32 retry_backoff_ms = 6;
+  // SPIFFE ID of the target service (e.g. spiffe://trust-domain/ns/svc).
+  // When non-empty and AUTH_TYPE=svid-exchange, the orchestrator obtains a
+  // scoped JWT from the svid-exchange service and attaches it as Authorization:
+  // Bearer on the outbound HTTP call for this step.
+  string target_spiffe_id = 7;
 }
 
 message StepExecution {

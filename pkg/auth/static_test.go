@@ -13,7 +13,7 @@ func TestStaticTokenSource(t *testing.T) {
 	t.Run("returns configured token", func(t *testing.T) {
 		t.Parallel()
 		src := auth.NewStaticTokenSource("my-secret")
-		got, err := src.Token(context.Background(), "http://example.com/step")
+		got, err := src.Token(context.Background(), "http://example.com/step", "")
 		if err != nil {
 			t.Fatalf("Token: unexpected error: %v", err)
 		}
@@ -30,7 +30,7 @@ func TestStaticTokenSource(t *testing.T) {
 			"http://service-b/compensate",
 			"https://other.internal/step",
 		} {
-			got, err := src.Token(context.Background(), url)
+			got, err := src.Token(context.Background(), url, "")
 			if err != nil {
 				t.Fatalf("Token(%q): unexpected error: %v", url, err)
 			}

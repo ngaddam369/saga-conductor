@@ -17,7 +17,7 @@ func NewStaticTokenSource(token string) StaticTokenSource {
 	return StaticTokenSource{token: token}
 }
 
-func (s StaticTokenSource) Token(_ context.Context, _ string) (string, error) {
+func (s StaticTokenSource) Token(_ context.Context, _ string, _ string) (string, error) {
 	return s.token, nil
 }
 

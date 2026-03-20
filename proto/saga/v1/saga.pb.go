@@ -170,6 +170,11 @@ type StepDefinition struct {
 	// Base backoff in milliseconds for retry delays (0 = server default).
 	// Valid range: 0–60000 (1 minute).
 	RetryBackoffMs int32 `protobuf:"varint,6,opt,name=retry_backoff_ms,json=retryBackoffMs,proto3" json:"retry_backoff_ms,omitempty"`
+	// SPIFFE ID of the target service (e.g. spiffe://trust-domain/ns/svc).
+	// When non-empty and AUTH_TYPE=svid-exchange, the orchestrator obtains a
+	// scoped JWT from the svid-exchange service and attaches it as Authorization:
+	// Bearer on the outbound HTTP call for this step.
+	TargetSpiffeId string `protobuf:"bytes,7,opt,name=target_spiffe_id,json=targetSpiffeId,proto3" json:"target_spiffe_id,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -244,6 +249,13 @@ func (x *StepDefinition) GetRetryBackoffMs() int32 {
 		return x.RetryBackoffMs
 	}
 	return 0
+}
+
+func (x *StepDefinition) GetTargetSpiffeId() string {
+	if x != nil {
+		return x.TargetSpiffeId
+	}
+	return ""
 }
 
 type StepExecution struct {
@@ -956,7 +968,7 @@ var File_proto_saga_v1_saga_proto protoreflect.FileDescriptor
 
 const file_proto_saga_v1_saga_proto_rawDesc = "" +
 	"\n" +
-	"\x18proto/saga/v1/saga.proto\x12\asaga.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe0\x01\n" +
+	"\x18proto/saga/v1/saga.proto\x12\asaga.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x8a\x02\n" +
 	"\x0eStepDefinition\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1f\n" +
 	"\vforward_url\x18\x02 \x01(\tR\n" +
@@ -965,7 +977,8 @@ const file_proto_saga_v1_saga_proto_rawDesc = "" +
 	"\x0ftimeout_seconds\x18\x04 \x01(\x05R\x0etimeoutSeconds\x12\x1f\n" +
 	"\vmax_retries\x18\x05 \x01(\x05R\n" +
 	"maxRetries\x12(\n" +
-	"\x10retry_backoff_ms\x18\x06 \x01(\x05R\x0eretryBackoffMs\"\x83\x02\n" +
+	"\x10retry_backoff_ms\x18\x06 \x01(\x05R\x0eretryBackoffMs\x12(\n" +
+	"\x10target_spiffe_id\x18\a \x01(\tR\x0etargetSpiffeId\"\x83\x02\n" +
 	"\rStepExecution\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12+\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x13.saga.v1.StepStatusR\x06status\x12\x14\n" +

@@ -44,7 +44,7 @@ func TestOIDCTokenSource(t *testing.T) {
 		srv := tokenServer(t, &calls, "my-access-token", 3600)
 		src := auth.NewOIDCTokenSource(srv.URL, "client-id", "client-secret", nil)
 
-		tok, err := src.Token(context.Background(), "http://step-service/forward")
+		tok, err := src.Token(context.Background(), "http://step-service/forward", "")
 		if err != nil {
 			t.Fatalf("Token: unexpected error: %v", err)
 		}
@@ -63,7 +63,7 @@ func TestOIDCTokenSource(t *testing.T) {
 		src := auth.NewOIDCTokenSource(srv.URL, "client-id", "client-secret", nil)
 
 		for i := range 5 {
-			tok, err := src.Token(context.Background(), "http://step/fwd")
+			tok, err := src.Token(context.Background(), "http://step/fwd", "")
 			if err != nil {
 				t.Fatalf("call %d: Token: %v", i+1, err)
 			}
@@ -86,7 +86,7 @@ func TestOIDCTokenSource(t *testing.T) {
 		src := auth.NewOIDCTokenSource(srv.URL, "client-id", "client-secret", nil,
 			auth.WithOIDCExpiryBuffer(0))
 
-		if _, err := src.Token(context.Background(), "http://step/fwd"); err != nil {
+		if _, err := src.Token(context.Background(), "http://step/fwd", ""); err != nil {
 			t.Fatalf("first Token: %v", err)
 		}
 		if calls.Load() != 1 {
@@ -96,7 +96,7 @@ func TestOIDCTokenSource(t *testing.T) {
 		// Wait for the 1-second token to expire.
 		time.Sleep(2 * time.Second)
 
-		if _, err := src.Token(context.Background(), "http://step/fwd"); err != nil {
+		if _, err := src.Token(context.Background(), "http://step/fwd", ""); err != nil {
 			t.Fatalf("second Token: %v", err)
 		}
 		if calls.Load() != 2 {
@@ -114,7 +114,7 @@ func TestOIDCTokenSource(t *testing.T) {
 			"http://service-a/forward",
 			"http://service-b/compensate",
 		} {
-			tok, err := src.Token(context.Background(), url)
+			tok, err := src.Token(context.Background(), url, "")
 			if err != nil {
 				t.Fatalf("Token(%q): %v", url, err)
 			}
@@ -136,7 +136,7 @@ func TestOIDCTokenSource(t *testing.T) {
 		t.Cleanup(errSrv.Close)
 		src := auth.NewOIDCTokenSource(errSrv.URL, "client-id", "client-secret", nil)
 
-		if _, err := src.Token(context.Background(), "http://step/fwd"); err == nil {
+		if _, err := src.Token(context.Background(), "http://step/fwd", ""); err == nil {
 			t.Error("Token: expected error when endpoint returns 500, got nil")
 		}
 	})
@@ -148,7 +148,7 @@ func TestOIDCTokenSource(t *testing.T) {
 		src := auth.NewOIDCTokenSource(srv.URL, "client-id", "client-secret", nil)
 
 		for i := range 3 {
-			tok, err := src.Token(context.Background(), "http://step/fwd")
+			tok, err := src.Token(context.Background(), "http://step/fwd", "")
 			if err != nil {
 				t.Fatalf("call %d: Token: %v", i+1, err)
 			}

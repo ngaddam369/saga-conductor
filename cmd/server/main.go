@@ -251,7 +251,6 @@ func run(log zerolog.Logger) error {
 // based on authType. It is a pure function — no I/O — so it is easy to test.
 //
 // "none" (default): Noop implementations — open server, no outbound token.
-// Future cases ("svid-exchange") are added here;
 // the interfaces in internal/engine and internal/server never change.
 func buildAuthProviders(authType string) (engine.TokenSource, server.TokenValidator, error) {
 	switch authType {
@@ -281,7 +280,15 @@ func buildAuthProviders(authType string) (engine.TokenSource, server.TokenValida
 			scopes = strings.Fields(s)
 		}
 		return auth.NewOIDCTokenSource(tokenURL, clientID, clientSecret, scopes), auth.NoopTokenValidator{}, nil
-	// Future cases: "svid-exchange"
+	case "svid-exchange":
+		addr := os.Getenv("AUTH_SVID_EXCHANGE_ADDR")
+		if addr == "" {
+			return nil, nil, fmt.Errorf("AUTH_SVID_EXCHANGE_ADDR must be set when AUTH_TYPE=svid-exchange")
+		}
+		// Socket path is optional: falls back to SPIFFE_ENDPOINT_SOCKET env var
+		// in the svid-exchange client when empty.
+		socketPath := os.Getenv("SPIFFE_ENDPOINT_SOCKET")
+		return auth.NewSVIDExchangeTokenSource(addr, socketPath), auth.NoopTokenValidator{}, nil
 	default:
 		return nil, nil, fmt.Errorf("unknown AUTH_TYPE %q", authType)
 	}

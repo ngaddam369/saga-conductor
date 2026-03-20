@@ -1428,6 +1428,123 @@ func TestBuildAuthProvidersJWT(t *testing.T) {
 	})
 }
 
+func TestSVIDExchangeTokenSourceInjection(t *testing.T) {
+	// Verify that when an SVIDExchangeTokenSource (backed by a mock token client)
+	// is wired into the engine and the step carries a target_spiffe_id, its token
+	// is injected as Authorization: Bearer on outbound step HTTP calls.
+	t.Setenv("STEP_MAX_RETRIES", "0")
+
+	const (
+		wantToken    = "svid-exchange-token"
+		targetSPIFFE = "spiffe://cluster.local/ns/default/sa/svc-a"
+	)
+
+	// Step server: captures the Authorization header.
+	var gotHeader string
+	stepSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(stepSrv.Close)
+
+	s, err := store.NewBoltStore(filepath.Join(t.TempDir(), "svid-inject.db"))
+	if err != nil {
+		t.Fatalf("NewBoltStore: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	// Inject a mock token client so the test doesn't need a real svid-exchange
+	// server or SPIRE agent.
+	mockClient := &mockSVIDTokenClient{token: wantToken}
+	tokenSrc := auth.NewSVIDExchangeTokenSource("svid.internal:443", "",
+		auth.WithNewTokenClient(func(_ context.Context, _, _, _ string) (auth.SVIDTokenClient, error) {
+			return mockClient, nil
+		}),
+	)
+	eng := engine.New(s, engine.WithTokenSource(tokenSrc), engine.WithDefaultMaxRetries(0))
+
+	grpcSrv := grpc.NewServer()
+	pb.RegisterSagaOrchestratorServer(grpcSrv, server.New(s, eng, 24*time.Hour))
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = grpcSrv.Serve(lis) }()
+	t.Cleanup(grpcSrv.GracefulStop)
+
+	conn, err := grpc.NewClient(lis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	grpcClient := pb.NewSagaOrchestratorClient(conn)
+
+	created, err := grpcClient.CreateSaga(context.Background(), &pb.CreateSagaRequest{
+		Name: "svid-inject-saga",
+		Steps: []*pb.StepDefinition{
+			{
+				Name:           "step-1",
+				ForwardUrl:     stepSrv.URL,
+				CompensateUrl:  stepSrv.URL,
+				TargetSpiffeId: targetSPIFFE,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSaga: %v", err)
+	}
+	if _, err := grpcClient.StartSaga(context.Background(), &pb.StartSagaRequest{SagaId: created.Saga.Id}); err != nil {
+		t.Fatalf("StartSaga: %v", err)
+	}
+
+	if want := "Bearer " + wantToken; gotHeader != want {
+		t.Errorf("Authorization header: got %q, want %q", gotHeader, want)
+	}
+}
+
+// mockSVIDTokenClient is an auth.SVIDTokenClient for integration tests.
+type mockSVIDTokenClient struct {
+	token string
+}
+
+func (m *mockSVIDTokenClient) Token(_ context.Context) (string, error) { return m.token, nil }
+func (m *mockSVIDTokenClient) Close() error                            { return nil }
+
+func TestBuildAuthProvidersSVIDExchange(t *testing.T) {
+	t.Run("svid-exchange missing addr returns error", func(t *testing.T) {
+		t.Setenv("AUTH_SVID_EXCHANGE_ADDR", "")
+		if _, _, err := buildAuthProviders("svid-exchange"); err == nil {
+			t.Error("buildAuthProviders: expected error when AUTH_SVID_EXCHANGE_ADDR is empty, got nil")
+		}
+	})
+
+	t.Run("svid-exchange with addr and no socket returns providers", func(t *testing.T) {
+		t.Setenv("AUTH_SVID_EXCHANGE_ADDR", "svid.internal:443")
+		t.Setenv("SPIFFE_ENDPOINT_SOCKET", "")
+		src, val, err := buildAuthProviders("svid-exchange")
+		if err != nil {
+			t.Fatalf("buildAuthProviders: %v", err)
+		}
+		if src == nil || val == nil {
+			t.Fatal("expected non-nil providers")
+		}
+	})
+
+	t.Run("svid-exchange with addr and socket returns providers", func(t *testing.T) {
+		t.Setenv("AUTH_SVID_EXCHANGE_ADDR", "svid.internal:443")
+		t.Setenv("SPIFFE_ENDPOINT_SOCKET", "unix:///tmp/spire-agent.sock")
+		src, val, err := buildAuthProviders("svid-exchange")
+		if err != nil {
+			t.Fatalf("buildAuthProviders: %v", err)
+		}
+		if src == nil || val == nil {
+			t.Fatal("expected non-nil providers")
+		}
+	})
+}
+
 func TestBuildAuthProvidersOIDC(t *testing.T) {
 	t.Run("oidc with all vars returns providers", func(t *testing.T) {
 		t.Setenv("AUTH_OIDC_TOKEN_URL", "http://localhost:9999/token")

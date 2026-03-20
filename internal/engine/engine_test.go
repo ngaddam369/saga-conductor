@@ -1728,13 +1728,13 @@ func TestEngineTokenSource(t *testing.T) {
 // staticTokenSource always returns the same token.
 type staticTokenSource struct{ token string }
 
-func (s *staticTokenSource) Token(_ context.Context, _ string) (string, error) {
+func (s *staticTokenSource) Token(_ context.Context, _ string, _ string) (string, error) {
 	return s.token, nil
 }
 
 // errorTokenSource always returns an error.
 type errorTokenSource struct{ err error }
 
-func (e *errorTokenSource) Token(_ context.Context, _ string) (string, error) {
+func (e *errorTokenSource) Token(_ context.Context, _ string, _ string) (string, error) {
 	return "", e.err
 }

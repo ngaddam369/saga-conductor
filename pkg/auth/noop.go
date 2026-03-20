@@ -13,7 +13,7 @@ import "context"
 // This is the default when AUTH_TYPE is unset or "none".
 type NoopTokenSource struct{}
 
-func (NoopTokenSource) Token(_ context.Context, _ string) (string, error) {
+func (NoopTokenSource) Token(_ context.Context, _ string, _ string) (string, error) {
 	return "", nil
 }
 

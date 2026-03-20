@@ -322,7 +322,8 @@ func (e *Engine) Resume(ctx context.Context, id string) (*saga.Execution, error)
 	}
 
 	switch exec.Status {
-	case saga.SagaStatusCompleted, saga.SagaStatusFailed:
+	case saga.SagaStatusCompleted, saga.SagaStatusFailed,
+		saga.SagaStatusAborted, saga.SagaStatusCompensationFailed:
 		return exec, nil // already terminal — nothing to do
 	case saga.SagaStatusRunning, saga.SagaStatusCompensating:
 		// handled below

@@ -89,8 +89,8 @@ func (v *JWTValidator) Validate(ctx context.Context, token string) error {
 func (v *JWTValidator) keyFunc(ctx context.Context) jwt.Keyfunc {
 	return func(t *jwt.Token) (any, error) {
 		var kid string
-		if v, ok := t.Header["kid"].(string); ok {
-			kid = v
+		if kidVal, ok := t.Header["kid"].(string); ok {
+			kid = kidVal
 		}
 
 		// Fast path: key is already in the cache.

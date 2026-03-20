@@ -249,9 +249,6 @@ func run(log zerolog.Logger) error {
 
 // buildAuthProviders selects the TokenSource and TokenValidator implementations
 // based on authType. It is a pure function — no I/O — so it is easy to test.
-//
-// "none" (default): Noop implementations — open server, no outbound token.
-// the interfaces in internal/engine and internal/server never change.
 func buildAuthProviders(authType string) (engine.TokenSource, server.TokenValidator, error) {
 	switch authType {
 	case "none":

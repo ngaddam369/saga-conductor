@@ -222,8 +222,11 @@ func (s *Server) GetSaga(ctx context.Context, req *pb.GetSagaRequest) (*pb.GetSa
 func (s *Server) ListSagas(ctx context.Context, req *pb.ListSagasRequest) (*pb.ListSagasResponse, error) {
 	filter := fromProtoStatus(req.Status)
 
+	if req.PageSize < 0 {
+		return nil, status.Error(codes.InvalidArgument, "page_size must not be negative")
+	}
 	pageSize := int(req.PageSize)
-	if pageSize <= 0 {
+	if pageSize == 0 {
 		pageSize = 100
 	}
 	if pageSize > 1000 {

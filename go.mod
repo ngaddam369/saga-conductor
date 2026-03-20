@@ -41,5 +41,3 @@ require (
 	golang.org/x/text v0.35.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260209200024-4cfbd4190f57 // indirect
 )
-
-replace github.com/ngaddam369/svid-exchange => /home/ngaddam369/go_projects/svid-exchange

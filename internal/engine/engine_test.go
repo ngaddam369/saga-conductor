@@ -1095,20 +1095,57 @@ func TestEngineResume(t *testing.T) {
 
 	t.Run("TerminalIsNoop", func(t *testing.T) {
 		t.Parallel()
-		eng, s := newEngine(t)
-		ok, _ := stepServer(t, http.StatusOK)
-		seedSaga(t, s, []saga.StepDefinition{
-			{Name: "s1", ForwardURL: ok.URL, CompensateURL: ok.URL},
+
+		t.Run("COMPLETED", func(t *testing.T) {
+			t.Parallel()
+			eng, s := newEngine(t)
+			ok, _ := stepServer(t, http.StatusOK)
+			seedSaga(t, s, []saga.StepDefinition{
+				{Name: "s1", ForwardURL: ok.URL, CompensateURL: ok.URL},
+			})
+			if _, err := eng.Start(context.Background(), "saga-1"); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			exec, err := eng.Resume(context.Background(), "saga-1")
+			if err != nil {
+				t.Fatalf("Resume on COMPLETED saga: %v", err)
+			}
+			if exec.Status != saga.SagaStatusCompleted {
+				t.Errorf("Status: got %s, want COMPLETED", exec.Status)
+			}
 		})
-		if _, err := eng.Start(context.Background(), "saga-1"); err != nil {
-			t.Fatalf("Start: %v", err)
-		}
-		exec, err := eng.Resume(context.Background(), "saga-1")
-		if err != nil {
-			t.Fatalf("Resume on terminal saga: %v", err)
-		}
-		if exec.Status != saga.SagaStatusCompleted {
-			t.Errorf("Status: got %s, want COMPLETED", exec.Status)
+
+		// ABORTED and COMPENSATION_FAILED are also terminal; Resume must
+		// return the execution unchanged rather than an error.
+		for _, terminalStatus := range []saga.SagaStatus{
+			saga.SagaStatusAborted,
+			saga.SagaStatusCompensationFailed,
+		} {
+			t.Run(string(terminalStatus), func(t *testing.T) {
+				t.Parallel()
+				_, s := newEngine(t)
+				eng := engine.New(s, engine.WithDefaultMaxRetries(0))
+
+				exec := &saga.Execution{
+					ID:        "saga-1",
+					Name:      "terminal-saga",
+					Status:    terminalStatus,
+					StepDefs:  []saga.StepDefinition{{Name: "s1"}},
+					Steps:     []saga.StepExecution{{Name: "s1", Status: saga.StepStatusFailed}},
+					CreatedAt: time.Now().UTC(),
+				}
+				if err := s.Create(context.Background(), exec); err != nil {
+					t.Fatalf("seed: %v", err)
+				}
+
+				got, err := eng.Resume(context.Background(), "saga-1")
+				if err != nil {
+					t.Fatalf("Resume on %s saga: unexpected error: %v", terminalStatus, err)
+				}
+				if got.Status != terminalStatus {
+					t.Errorf("Status: got %s, want %s", got.Status, terminalStatus)
+				}
+			})
 		}
 	})
 

@@ -568,6 +568,14 @@ func TestServer(t *testing.T) {
 			}
 		})
 
+		t.Run("page_size negative returns InvalidArgument", func(t *testing.T) {
+			if _, err := client.ListSagas(ctx, &pb.ListSagasRequest{PageSize: -1}); err == nil {
+				t.Error("ListSagas: expected error for negative page_size, got nil")
+			} else if code := status.Code(err); code != codes.InvalidArgument {
+				t.Errorf("ListSagas: code = %v, want InvalidArgument", code)
+			}
+		})
+
 		t.Run("full pagination collects all items", func(t *testing.T) {
 			var all []*pb.SagaExecution
 			var token string

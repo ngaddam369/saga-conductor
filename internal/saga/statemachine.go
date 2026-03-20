@@ -6,8 +6,8 @@ import (
 )
 
 // validSagaTransitions defines every permitted saga status change.
-// Terminal states (COMPLETED, FAILED) have empty target sets — no transition
-// out of a terminal state is ever valid.
+// Terminal states (COMPLETED, FAILED, ABORTED, COMPENSATION_FAILED) have empty
+// target sets — no transition out of a terminal state is ever valid.
 var validSagaTransitions = map[SagaStatus][]SagaStatus{
 	SagaStatusPending:            {SagaStatusRunning, SagaStatusAborted},
 	SagaStatusRunning:            {SagaStatusCompleted, SagaStatusCompensating, SagaStatusFailed, SagaStatusAborted},

@@ -43,3 +43,6 @@ Thumbs.db
 
 # Project-specific: local task list (never committed — local only)
 TODO.md
+
+# Build output at repo root
+server

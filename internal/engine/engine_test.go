@@ -1,7 +1,9 @@
 package engine_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"net/http"
@@ -11,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/rs/zerolog"
 
 	"github.com/ngaddam369/saga-conductor/internal/engine"
 	"github.com/ngaddam369/saga-conductor/internal/saga"
@@ -1384,6 +1388,82 @@ func TestEngineAbort(t *testing.T) {
 		_, err := eng.Abort(ctx, "any-id")
 		if err == nil {
 			t.Fatal("Abort: want error for cancelled context, got nil")
+		}
+	})
+}
+
+func TestEngineLogging(t *testing.T) {
+	t.Parallel()
+
+	t.Run("saga completed emits structured log with saga_id and status", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		log := zerolog.New(&buf)
+
+		s, err := store.NewBoltStore(filepath.Join(t.TempDir(), "log.db"))
+		if err != nil {
+			t.Fatalf("NewBoltStore: %v", err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		eng := engine.New(s, engine.WithRetryBackoff(time.Millisecond), engine.WithDefaultMaxRetries(0), engine.WithLogger(log))
+
+		fwd, _ := stepServer(t, http.StatusOK)
+		seedSaga(t, s, []saga.StepDefinition{
+			{Name: "pay", ForwardURL: fwd.URL, CompensateURL: fwd.URL},
+		})
+
+		ctx := log.WithContext(context.Background())
+		if _, err = eng.Start(ctx, "saga-1"); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+
+		var foundCompleted bool
+		for _, line := range bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n")) {
+			var entry map[string]any
+			if err := json.Unmarshal(line, &entry); err != nil {
+				continue
+			}
+			if entry["saga_id"] == "saga-1" && entry["status"] == string(saga.SagaStatusCompleted) {
+				foundCompleted = true
+			}
+		}
+		if !foundCompleted {
+			t.Errorf("expected log entry with saga_id=saga-1 status=COMPLETED; got:\n%s", buf.String())
+		}
+	})
+
+	t.Run("step failed emits error log with step name", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		log := zerolog.New(&buf)
+
+		s, err := store.NewBoltStore(filepath.Join(t.TempDir(), "log2.db"))
+		if err != nil {
+			t.Fatalf("NewBoltStore: %v", err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		eng := engine.New(s, engine.WithRetryBackoff(time.Millisecond), engine.WithDefaultMaxRetries(0), engine.WithLogger(log))
+
+		fwd, _ := stepServer(t, http.StatusInternalServerError)
+		seedSaga(t, s, []saga.StepDefinition{
+			{Name: "charge", ForwardURL: fwd.URL, CompensateURL: fwd.URL},
+		})
+
+		ctx := log.WithContext(context.Background())
+		_, _ = eng.Start(ctx, "saga-1")
+
+		var foundStepFailed bool
+		for _, line := range bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n")) {
+			var entry map[string]any
+			if err := json.Unmarshal(line, &entry); err != nil {
+				continue
+			}
+			if entry["step"] == "charge" && entry["status"] == string(saga.StepStatusFailed) {
+				foundStepFailed = true
+			}
+		}
+		if !foundStepFailed {
+			t.Errorf("expected log entry with step=charge status=FAILED; got:\n%s", buf.String())
 		}
 	})
 }

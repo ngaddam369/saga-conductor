@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -152,6 +153,7 @@ func (s *Server) StartSaga(ctx context.Context, req *pb.StartSagaRequest) (*pb.S
 		return nil, status.Error(codes.InvalidArgument, "saga_id is required")
 	}
 
+	log := zerolog.Ctx(ctx).With().Str("saga_id", req.SagaId).Logger()
 	exec, err := s.engine.Start(ctx, req.SagaId)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -178,6 +180,7 @@ func (s *Server) StartSaga(ctx context.Context, req *pb.StartSagaRequest) (*pb.S
 		if errors.Is(err, engine.ErrDraining) {
 			return nil, status.Error(codes.Unavailable, "server is shutting down")
 		}
+		log.Error().Err(err).Msg("StartSaga failed")
 		return nil, status.Errorf(codes.Internal, "start saga: %v", err)
 	}
 

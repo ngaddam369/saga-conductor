@@ -4,6 +4,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 func TestGetEnvInt(t *testing.T) {
@@ -262,7 +264,7 @@ func (immediateStopper) Stop()         {}
 func TestGRPCStopWithTimeout(t *testing.T) {
 	t.Run("graceful stop completes before timeout", func(t *testing.T) {
 		start := time.Now()
-		grpcStopWithTimeout(immediateStopper{}, 5*time.Second)
+		grpcStopWithTimeout(immediateStopper{}, 5*time.Second, zerolog.Nop())
 		if elapsed := time.Since(start); elapsed > 3*time.Second {
 			t.Errorf("took %v; expected immediate return when GracefulStop is fast", elapsed)
 		}
@@ -273,7 +275,7 @@ func TestGRPCStopWithTimeout(t *testing.T) {
 
 		const stopTimeout = 50 * time.Millisecond
 		start := time.Now()
-		grpcStopWithTimeout(h, stopTimeout)
+		grpcStopWithTimeout(h, stopTimeout, zerolog.Nop())
 		elapsed := time.Since(start)
 
 		if !h.stopCalled.Load() {

@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 
@@ -34,7 +35,7 @@ type grpcStopper interface {
 // grpcStopWithTimeout attempts a graceful gRPC server stop, waiting up to
 // timeout for all open connections to close. If the deadline is exceeded,
 // Stop() is called to force-close any remaining connections.
-func grpcStopWithTimeout(srv grpcStopper, timeout time.Duration) {
+func grpcStopWithTimeout(srv grpcStopper, timeout time.Duration, log zerolog.Logger) {
 	graceDone := make(chan struct{})
 	go func() {
 		srv.GracefulStop()
@@ -43,21 +44,19 @@ func grpcStopWithTimeout(srv grpcStopper, timeout time.Duration) {
 	select {
 	case <-graceDone:
 	case <-time.After(timeout):
-		fmt.Fprintf(os.Stderr,
-			"saga-conductor: gRPC graceful stop timed out after %s; forcing stop\n",
-			timeout)
+		log.Error().Dur("timeout", timeout).Msg("gRPC graceful stop timed out; forcing stop")
 		srv.Stop()
 	}
 }
 
 func main() {
-	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "saga-conductor: %v\n", err)
-		os.Exit(1)
+	log := zerolog.New(os.Stderr).With().Timestamp().Str("service", "saga-conductor").Logger()
+	if err := run(log); err != nil {
+		log.Fatal().Err(err).Msg("startup failed")
 	}
 }
 
-func run() error {
+func run(log zerolog.Logger) error {
 	cfg := loadConfig()
 
 	s, err := store.NewBoltStore(cfg.dbPath)
@@ -66,14 +65,15 @@ func run() error {
 	}
 	defer func() {
 		if err = s.Close(); err != nil {
-			fmt.Fprintf(os.Stderr, "close store: %v\n", err)
+			log.Error().Err(err).Msg("close store failed")
 		}
 	}()
 
-	eng := engine.New(s)
+	eng := engine.New(s, engine.WithLogger(log))
 
 	// Resume any sagas left in RUNNING or COMPENSATING state by a previous crash.
-	if err = scheduler.New(s, eng).Run(context.Background()); err != nil {
+	resumeCtx := log.WithContext(context.Background())
+	if err = scheduler.New(s, eng).Run(resumeCtx); err != nil {
 		return fmt.Errorf("scheduler: %w", err)
 	}
 
@@ -173,14 +173,14 @@ func run() error {
 	errCh := make(chan error, 2)
 
 	go func() {
-		fmt.Printf("grpc listening on %s\n", cfg.grpcAddr)
+		log.Info().Str("addr", cfg.grpcAddr).Msg("gRPC server listening")
 		if err := grpcServer.Serve(lis); err != nil {
 			errCh <- fmt.Errorf("grpc serve: %w", err)
 		}
 	}()
 
 	go func() {
-		fmt.Printf("health http listening on %s\n", cfg.healthAddr)
+		log.Info().Str("addr", cfg.healthAddr).Msg("health HTTP server listening")
 		if err := healthSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- fmt.Errorf("health serve: %w", err)
 		}
@@ -191,7 +191,7 @@ func run() error {
 
 	select {
 	case sig := <-quit:
-		fmt.Printf("received %s, shutting down\n", sig)
+		log.Info().Str("signal", sig.String()).Msg("shutdown signal received")
 	case err = <-errCh:
 		return err
 	}
@@ -210,9 +210,10 @@ func run() error {
 	interrupted := eng.Drain(drainCtx)
 	drainCancel()
 	if len(interrupted) > 0 {
-		fmt.Fprintf(os.Stderr,
-			"saga-conductor: shutdown timeout reached; %d saga(s) interrupted and will be resumed on next startup: %v\n",
-			len(interrupted), interrupted)
+		log.Warn().
+			Int("count", len(interrupted)).
+			Strs("saga_ids", interrupted).
+			Msg("shutdown timeout reached; interrupted sagas will be resumed on next startup")
 	}
 
 	// Attempt a graceful stop, but enforce a hard deadline. GracefulStop blocks
@@ -221,7 +222,7 @@ func run() error {
 	// open by a network partition. Without a fallback, a single misbehaving
 	// client can prevent the process from ever exiting, blocking rolling deploys
 	// and pod recycling.
-	grpcStopWithTimeout(grpcServer, time.Duration(cfg.grpcStopTimeoutSecs)*time.Second)
+	grpcStopWithTimeout(grpcServer, time.Duration(cfg.grpcStopTimeoutSecs)*time.Second, log)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

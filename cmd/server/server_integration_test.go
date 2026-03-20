@@ -20,6 +20,8 @@ import (
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 
+	"github.com/rs/zerolog"
+
 	"github.com/ngaddam369/saga-conductor/internal/engine"
 	"github.com/ngaddam369/saga-conductor/internal/server"
 	"github.com/ngaddam369/saga-conductor/internal/store"
@@ -1037,7 +1039,7 @@ func TestIntegration(t *testing.T) {
 			go func() { _ = grpcSrv.Serve(lis) }()
 
 			start := time.Now()
-			grpcStopWithTimeout(grpcSrv, 5*time.Second)
+			grpcStopWithTimeout(grpcSrv, 5*time.Second, zerolog.Nop())
 			if elapsed := time.Since(start); elapsed > 3*time.Second {
 				t.Errorf("took %v; expected idle server to stop quickly", elapsed)
 			}
@@ -1097,7 +1099,7 @@ func TestIntegration(t *testing.T) {
 
 			const stopTimeout = 100 * time.Millisecond
 			start := time.Now()
-			grpcStopWithTimeout(grpcSrv, stopTimeout)
+			grpcStopWithTimeout(grpcSrv, stopTimeout, zerolog.Nop())
 			elapsed := time.Since(start)
 
 			if elapsed < stopTimeout {

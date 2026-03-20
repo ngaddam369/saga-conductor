@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -36,11 +37,11 @@ import (
 
 	"github.com/ngaddam369/saga-conductor/internal/dashboard"
 	"github.com/ngaddam369/saga-conductor/internal/engine"
-	sagaclient "github.com/ngaddam369/saga-conductor/pkg/client"
 	"github.com/ngaddam369/saga-conductor/internal/saga"
 	"github.com/ngaddam369/saga-conductor/internal/server"
 	"github.com/ngaddam369/saga-conductor/internal/store"
 	"github.com/ngaddam369/saga-conductor/pkg/auth"
+	sagaclient "github.com/ngaddam369/saga-conductor/pkg/client"
 	pb "github.com/ngaddam369/saga-conductor/proto/saga/v1"
 )
 
@@ -1919,5 +1920,81 @@ func TestClientEndToEnd(t *testing.T) {
 	}
 	if len(sagas) < 2 {
 		t.Errorf("ListSagas: want ≥2 sagas, got %d", len(sagas))
+	}
+}
+
+func TestCreateSagaFromTemplate(t *testing.T) {
+	t.Parallel()
+
+	// Step server — always succeeds.
+	fwd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(fwd.Close)
+
+	// Write a temporary definitions file pointing at the test step server.
+	defsYAML := fmt.Sprintf(`
+sagas:
+  - name: tmpl-saga
+    steps:
+      - name: do-it
+        forward_url: %s
+        compensate_url: %s
+`, fwd.URL, fwd.URL)
+	defsPath := filepath.Join(t.TempDir(), "sagas.yaml")
+	if err := os.WriteFile(defsPath, []byte(defsYAML), 0o600); err != nil {
+		t.Fatalf("write defs: %v", err)
+	}
+
+	defs, err := saga.LoadDefinitions(defsPath)
+	if err != nil {
+		t.Fatalf("LoadDefinitions: %v", err)
+	}
+
+	// Build the production-like server with the loaded templates.
+	s, err := store.NewBoltStore(filepath.Join(t.TempDir(), "tmpl.db"))
+	if err != nil {
+		t.Fatalf("NewBoltStore: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	eng := engine.New(s)
+	grpcSrv := grpc.NewServer()
+	pb.RegisterSagaOrchestratorServer(grpcSrv, server.New(s, eng, 24*time.Hour,
+		server.WithTemplates(defs),
+	))
+	lis, lisErr := net.Listen("tcp", "127.0.0.1:0")
+	if lisErr != nil {
+		t.Fatalf("listen: %v", lisErr)
+	}
+	go func() { _ = grpcSrv.Serve(lis) }()
+	t.Cleanup(grpcSrv.GracefulStop)
+
+	conn, connErr := grpc.NewClient(lis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if connErr != nil {
+		t.Fatalf("dial: %v", connErr)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	client := pb.NewSagaOrchestratorClient(conn)
+
+	ctx := context.Background()
+
+	// CreateSaga by name only — no inline steps.
+	created, createErr := client.CreateSaga(ctx, &pb.CreateSagaRequest{Name: "tmpl-saga"})
+	if createErr != nil {
+		t.Fatalf("CreateSaga: %v", createErr)
+	}
+	if created.Saga.Status != pb.SagaStatus_SAGA_STATUS_PENDING {
+		t.Errorf("after create: want PENDING, got %v", created.Saga.Status)
+	}
+
+	// StartSaga — should complete successfully using the template's step URLs.
+	started, startErr := client.StartSaga(ctx, &pb.StartSagaRequest{SagaId: created.Saga.Id})
+	if startErr != nil {
+		t.Fatalf("StartSaga: %v", startErr)
+	}
+	if started.Saga.Status != pb.SagaStatus_SAGA_STATUS_COMPLETED {
+		t.Errorf("after start: want COMPLETED, got %v", started.Saga.Status)
 	}
 }

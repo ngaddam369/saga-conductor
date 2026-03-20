@@ -39,33 +39,33 @@ const (
 // StepDefinition describes a single step in a saga: what to call and how.
 type StepDefinition struct {
 	// Name is unique within the saga and used as the step identifier.
-	Name string `json:"name"`
+	Name string `json:"name" yaml:"name"`
 	// ForwardURL is POSTed to when executing the step.
-	ForwardURL string `json:"forward_url"`
+	ForwardURL string `json:"forward_url" yaml:"forward_url"`
 	// CompensateURL is POSTed to when rolling back the step.
-	CompensateURL string `json:"compensate_url"`
+	CompensateURL string `json:"compensate_url" yaml:"compensate_url"`
 	// TimeoutSeconds caps how long the orchestrator waits for the HTTP response.
 	// Zero means the server-wide default is used.
-	TimeoutSeconds int `json:"timeout_seconds"`
+	TimeoutSeconds int `json:"timeout_seconds" yaml:"timeout_seconds"`
 	// MaxRetries is the number of times to retry a failed step HTTP call before
 	// triggering compensation. Zero means the engine default is used.
-	MaxRetries int `json:"max_retries,omitempty"`
+	MaxRetries int `json:"max_retries,omitempty" yaml:"max_retries,omitempty"`
 	// RetryBackoffMs is the base backoff in milliseconds for the first retry.
 	// Subsequent retries use base * 2^attempt + jitter. Zero means the engine
 	// default is used.
-	RetryBackoffMs int `json:"retry_backoff_ms,omitempty"`
+	RetryBackoffMs int `json:"retry_backoff_ms,omitempty" yaml:"retry_backoff_ms,omitempty"`
 	// TargetSPIFFEID is the SPIFFE ID of the target service for this step.
 	// When non-empty and AUTH_TYPE=svid-exchange, the orchestrator fetches a
 	// scoped JWT from the svid-exchange service and attaches it as the
 	// Authorization: Bearer header on the outbound HTTP call.
-	TargetSPIFFEID string `json:"target_spiffe_id,omitempty"`
+	TargetSPIFFEID string `json:"target_spiffe_id,omitempty" yaml:"target_spiffe_id,omitempty"`
 	// AuthType selects the per-step authentication mechanism, overriding the
 	// server-wide AUTH_TYPE. Must be a registered type (none, static, jwt,
 	// oidc, svid-exchange). Empty means use the global default.
-	AuthType string `json:"auth_type,omitempty"`
+	AuthType string `json:"auth_type,omitempty" yaml:"auth_type,omitempty"`
 	// AuthConfig carries additional per-step auth parameters consumed by the
 	// selected AuthType implementation.
-	AuthConfig map[string]string `json:"auth_config,omitempty"`
+	AuthConfig map[string]string `json:"auth_config,omitempty" yaml:"auth_config,omitempty"`
 }
 
 // StepError holds structured context for a failed step HTTP call.

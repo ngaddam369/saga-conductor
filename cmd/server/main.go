@@ -27,6 +27,7 @@ import (
 	"github.com/ngaddam369/saga-conductor/internal/dashboard"
 	"github.com/ngaddam369/saga-conductor/internal/engine"
 	"github.com/ngaddam369/saga-conductor/internal/purger"
+	"github.com/ngaddam369/saga-conductor/internal/saga"
 	"github.com/ngaddam369/saga-conductor/internal/scheduler"
 	"github.com/ngaddam369/saga-conductor/internal/server"
 	"github.com/ngaddam369/saga-conductor/internal/store"
@@ -125,7 +126,16 @@ func run(log zerolog.Logger) error {
 	defer purgeCancel()
 	go purger.New(s).Run(purgeCtx)
 
-	srv := server.New(s, eng, time.Duration(cfg.idempotencyKeyTTLHours)*time.Hour)
+	var srvOpts []server.Option
+	if defPath := os.Getenv("SAGA_DEFINITIONS_PATH"); defPath != "" {
+		defs, err := saga.LoadDefinitions(defPath)
+		if err != nil {
+			return fmt.Errorf("load saga definitions: %w", err)
+		}
+		srvOpts = append(srvOpts, server.WithTemplates(defs))
+		log.Info().Str("path", defPath).Int("count", len(defs)).Msg("loaded saga definition templates")
+	}
+	srv := server.New(s, eng, time.Duration(cfg.idempotencyKeyTTLHours)*time.Hour, srvOpts...)
 
 	handlerTimeout := time.Duration(cfg.grpcHandlerTimeoutSecs) * time.Second
 	grpcOpts := []grpc.ServerOption{

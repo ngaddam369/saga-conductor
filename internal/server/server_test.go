@@ -87,7 +87,83 @@ func TestCreateSagaStoreErrorMapping(t *testing.T) {
 	}
 }
 
-func newTestServer(t *testing.T, eng server.Engine) (pb.SagaOrchestratorClient, *store.BoltStore) {
+// orderTemplate is a minimal saga template used by the template tests below.
+var orderTemplate = saga.SagaDefinition{
+	Name:               "order-saga",
+	SagaTimeoutSeconds: 300,
+	Steps: []saga.StepDefinition{
+		{Name: "reserve", ForwardURL: "http://inventory/reserve", CompensateURL: "http://inventory/release"},
+		{Name: "charge", ForwardURL: "http://payment/charge", CompensateURL: "http://payment/refund"},
+	},
+}
+
+func TestCreateSagaUsesTemplate(t *testing.T) {
+	t.Parallel()
+	client, _ := newTestServer(t, nil, server.WithTemplates([]saga.SagaDefinition{orderTemplate}))
+
+	resp, err := client.CreateSaga(context.Background(), &pb.CreateSagaRequest{
+		Name: "order-saga",
+		// No steps — should be filled in from the template.
+	})
+	if err != nil {
+		t.Fatalf("CreateSaga: %v", err)
+	}
+	if resp.Saga.Status != pb.SagaStatus_SAGA_STATUS_PENDING {
+		t.Errorf("status: want PENDING, got %v", resp.Saga.Status)
+	}
+	// Verify the step definitions came from the template via GetSaga (step_defs
+	// are not included in CreateSagaResponse, but the execution is stored fully).
+	got, err := client.GetSaga(context.Background(), &pb.GetSagaRequest{SagaId: resp.Saga.Id})
+	if err != nil {
+		t.Fatalf("GetSaga: %v", err)
+	}
+	if len(got.Saga.Steps) != 2 {
+		t.Errorf("steps: want 2, got %d", len(got.Saga.Steps))
+	}
+	if got.Saga.Steps[0].Name != "reserve" {
+		t.Errorf("step[0].name: want %q, got %q", "reserve", got.Saga.Steps[0].Name)
+	}
+}
+
+func TestCreateSagaUnknownTemplateNoSteps(t *testing.T) {
+	t.Parallel()
+	client, _ := newTestServer(t, nil, server.WithTemplates([]saga.SagaDefinition{orderTemplate}))
+
+	_, err := client.CreateSaga(context.Background(), &pb.CreateSagaRequest{
+		Name: "unknown-saga", // not in templates, no steps provided
+	})
+	if code := status.Code(err); code != codes.InvalidArgument {
+		t.Errorf("want InvalidArgument, got %v (err=%v)", code, err)
+	}
+}
+
+func TestCreateSagaInlineStepsIgnoreTemplate(t *testing.T) {
+	t.Parallel()
+	client, _ := newTestServer(t, nil, server.WithTemplates([]saga.SagaDefinition{orderTemplate}))
+
+	// Provide inline steps — they must win over the template's 2 steps.
+	resp, err := client.CreateSaga(context.Background(), &pb.CreateSagaRequest{
+		Name: "order-saga",
+		Steps: []*pb.StepDefinition{
+			{Name: "custom-step", ForwardUrl: "http://custom/fwd", CompensateUrl: "http://custom/comp"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSaga: %v", err)
+	}
+	got, err := client.GetSaga(context.Background(), &pb.GetSagaRequest{SagaId: resp.Saga.Id})
+	if err != nil {
+		t.Fatalf("GetSaga: %v", err)
+	}
+	if len(got.Saga.Steps) != 1 {
+		t.Errorf("steps: want 1 (inline), got %d", len(got.Saga.Steps))
+	}
+	if got.Saga.Steps[0].Name != "custom-step" {
+		t.Errorf("step[0].name: want %q, got %q", "custom-step", got.Saga.Steps[0].Name)
+	}
+}
+
+func newTestServer(t *testing.T, eng server.Engine, opts ...server.Option) (pb.SagaOrchestratorClient, *store.BoltStore) {
 	t.Helper()
 
 	s, err := store.NewBoltStore(filepath.Join(t.TempDir(), "test.db"))
@@ -101,7 +177,7 @@ func newTestServer(t *testing.T, eng server.Engine) (pb.SagaOrchestratorClient, 
 	}
 
 	grpcSrv := grpc.NewServer(grpc.MaxRecvMsgSize(20 * 1024 * 1024))
-	pb.RegisterSagaOrchestratorServer(grpcSrv, server.New(s, eng, 24*time.Hour))
+	pb.RegisterSagaOrchestratorServer(grpcSrv, server.New(s, eng, 24*time.Hour, opts...))
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

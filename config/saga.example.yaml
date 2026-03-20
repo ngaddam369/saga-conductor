@@ -1,0 +1,52 @@
+# saga-conductor: saga definition templates
+#
+# Load this file at server startup by setting:
+#   SAGA_DEFINITIONS_PATH=/path/to/saga.yaml
+#
+# Callers can then create a saga by name without supplying step definitions:
+#   CreateSaga { name: "order-saga" }
+#
+# Steps supplied inline in CreateSaga always take precedence over templates.
+
+sagas:
+  - name: order-saga
+    saga_timeout_seconds: 300     # 5-minute deadline for the whole saga
+    steps:
+      - name: reserve-inventory
+        forward_url: http://inventory-service/api/v1/reservations
+        compensate_url: http://inventory-service/api/v1/reservations/release
+        timeout_seconds: 10
+        max_retries: 3
+        retry_backoff_ms: 500
+
+      - name: charge-payment
+        forward_url: http://payment-service/api/v1/charges
+        compensate_url: http://payment-service/api/v1/charges/refund
+        timeout_seconds: 15
+        max_retries: 2
+        retry_backoff_ms: 1000
+        auth_type: oidc             # fetch a token via OAuth2 client credentials
+
+      - name: send-confirmation
+        forward_url: http://notification-service/api/v1/emails
+        compensate_url: http://notification-service/api/v1/emails/cancel
+        timeout_seconds: 5
+        max_retries: 5
+        retry_backoff_ms: 200
+
+  - name: payment-saga
+    saga_timeout_seconds: 120
+    steps:
+      - name: validate-payment-method
+        forward_url: http://payment-service/api/v1/validate
+        compensate_url: http://payment-service/api/v1/validate/undo
+        timeout_seconds: 10
+
+      - name: transfer-funds
+        forward_url: http://payment-service/api/v1/transfers
+        compensate_url: http://payment-service/api/v1/transfers/reverse
+        timeout_seconds: 30
+        max_retries: 1
+        retry_backoff_ms: 2000
+        auth_type: svid-exchange
+        target_spiffe_id: spiffe://example.org/payment-service

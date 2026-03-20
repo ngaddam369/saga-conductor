@@ -61,11 +61,35 @@ type Server struct {
 	store             store.Store
 	engine            Engine
 	idempotencyKeyTTL time.Duration
+	templates         map[string]saga.SagaDefinition
+}
+
+// Option configures a Server.
+type Option func(*Server)
+
+// WithTemplates registers saga definition templates. When CreateSaga receives a
+// request with no steps, the server looks up the template by name and uses its
+// steps. Requests that include inline steps are unaffected.
+func WithTemplates(defs []saga.SagaDefinition) Option {
+	return func(s *Server) {
+		for _, d := range defs {
+			s.templates[d.Name] = d
+		}
+	}
 }
 
 // New returns a Server wired with the given store, engine, and idempotency key TTL.
-func New(s store.Store, eng Engine, idempotencyKeyTTL time.Duration) *Server {
-	return &Server{store: s, engine: eng, idempotencyKeyTTL: idempotencyKeyTTL}
+func New(s store.Store, eng Engine, idempotencyKeyTTL time.Duration, opts ...Option) *Server {
+	srv := &Server{
+		store:             s,
+		engine:            eng,
+		idempotencyKeyTTL: idempotencyKeyTTL,
+		templates:         make(map[string]saga.SagaDefinition),
+	}
+	for _, o := range opts {
+		o(srv)
+	}
+	return srv
 }
 
 // CreateSaga registers a new saga in PENDING state.
@@ -74,7 +98,14 @@ func (s *Server) CreateSaga(ctx context.Context, req *pb.CreateSagaRequest) (*pb
 		return nil, status.Error(codes.InvalidArgument, "name is required")
 	}
 	if len(req.Steps) == 0 {
-		return nil, status.Error(codes.InvalidArgument, "at least one step is required")
+		tmpl, ok := s.templates[req.Name]
+		if !ok {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"at least one step is required (no template registered for %q)", req.Name)
+		}
+		// Promote the template's steps into proto form so the rest of the
+		// validation and mapping logic below runs unchanged.
+		req = cloneWithTemplateSteps(req, tmpl)
 	}
 	if len(req.Payload) > 10*1024*1024 {
 		return nil, status.Error(codes.InvalidArgument, "payload exceeds 10 MB")
@@ -368,6 +399,37 @@ func toProtoStepStatus(s saga.StepStatus) pb.StepStatus {
 		return pb.StepStatus_STEP_STATUS_COMPENSATION_FAILED
 	default:
 		return pb.StepStatus_STEP_STATUS_UNSPECIFIED
+	}
+}
+
+// cloneWithTemplateSteps returns a shallow clone of req with the Steps field
+// populated from the given template. The original request is not modified.
+func cloneWithTemplateSteps(req *pb.CreateSagaRequest, tmpl saga.SagaDefinition) *pb.CreateSagaRequest {
+	steps := make([]*pb.StepDefinition, len(tmpl.Steps))
+	for i, s := range tmpl.Steps {
+		steps[i] = &pb.StepDefinition{
+			Name:           s.Name,
+			ForwardUrl:     s.ForwardURL,
+			CompensateUrl:  s.CompensateURL,
+			TimeoutSeconds: int32(s.TimeoutSeconds),
+			MaxRetries:     int32(s.MaxRetries),
+			RetryBackoffMs: int32(s.RetryBackoffMs),
+			TargetSpiffeId: s.TargetSPIFFEID,
+			AuthType:       s.AuthType,
+			AuthConfig:     s.AuthConfig,
+		}
+	}
+	// Carry over the per-request saga timeout if set; otherwise use template's.
+	sagaTimeout := req.SagaTimeoutSeconds
+	if sagaTimeout == 0 {
+		sagaTimeout = int32(tmpl.SagaTimeoutSeconds)
+	}
+	return &pb.CreateSagaRequest{
+		Name:               req.Name,
+		Steps:              steps,
+		Payload:            req.Payload,
+		SagaTimeoutSeconds: sagaTimeout,
+		IdempotencyKey:     req.IdempotencyKey,
 	}
 }
 

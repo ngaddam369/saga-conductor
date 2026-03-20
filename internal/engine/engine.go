@@ -580,6 +580,7 @@ compensate:
 // entire forward execution. On timeout the current step fails immediately
 // via context cancellation, then compensation runs on a fresh context so
 // previously succeeded steps can still be rolled back.
+
 // Drain signals the engine to stop accepting new Start calls and waits for all
 // in-flight sagas to finish. If ctx expires before they all finish, Drain
 // returns the IDs of any sagas still running at that point; the background

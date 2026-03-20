@@ -69,6 +69,7 @@ func NewJWTValidator(jwksURL string, cacheTTL time.Duration) *JWTValidator {
 		jwksURL:    jwksURL,
 		cacheTTL:   cacheTTL,
 		httpClient: &http.Client{Timeout: 10 * time.Second},
+		keyCache:   make(map[string]crypto.PublicKey),
 	}
 }
 

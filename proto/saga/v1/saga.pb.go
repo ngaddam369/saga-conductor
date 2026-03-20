@@ -352,13 +352,16 @@ type SagaExecution struct {
 	Status SagaStatus             `protobuf:"varint,3,opt,name=status,proto3,enum=saga.v1.SagaStatus" json:"status,omitempty"`
 	Steps  []*StepExecution       `protobuf:"bytes,4,rep,name=steps,proto3" json:"steps,omitempty"`
 	// Opaque payload forwarded verbatim to every step and compensation endpoint.
-	Payload       []byte                 `protobuf:"bytes,5,opt,name=payload,proto3" json:"payload,omitempty"`
-	FailedStep    string                 `protobuf:"bytes,6,opt,name=failed_step,json=failedStep,proto3" json:"failed_step,omitempty"`
-	CreatedAt     *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
-	StartedAt     *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
-	CompletedAt   *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=completed_at,json=completedAt,proto3" json:"completed_at,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Payload     []byte                 `protobuf:"bytes,5,opt,name=payload,proto3" json:"payload,omitempty"`
+	FailedStep  string                 `protobuf:"bytes,6,opt,name=failed_step,json=failedStep,proto3" json:"failed_step,omitempty"`
+	CreatedAt   *timestamppb.Timestamp `protobuf:"bytes,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	StartedAt   *timestamppb.Timestamp `protobuf:"bytes,8,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
+	CompletedAt *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=completed_at,json=completedAt,proto3" json:"completed_at,omitempty"`
+	// Per-saga execution deadline in seconds. Zero means the server-wide default
+	// was used. Mirrors the value set in CreateSagaRequest.saga_timeout_seconds.
+	SagaTimeoutSeconds int32 `protobuf:"varint,10,opt,name=saga_timeout_seconds,json=sagaTimeoutSeconds,proto3" json:"saga_timeout_seconds,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *SagaExecution) Reset() {
@@ -452,6 +455,13 @@ func (x *SagaExecution) GetCompletedAt() *timestamppb.Timestamp {
 		return x.CompletedAt
 	}
 	return nil
+}
+
+func (x *SagaExecution) GetSagaTimeoutSeconds() int32 {
+	if x != nil {
+		return x.SagaTimeoutSeconds
+	}
+	return 0
 }
 
 type CreateSagaRequest struct {
@@ -986,7 +996,7 @@ const file_proto_saga_v1_saga_proto_rawDesc = "" +
 	"\n" +
 	"started_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x12=\n" +
 	"\fcompleted_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\vcompletedAt\x12!\n" +
-	"\ferror_detail\x18\x06 \x01(\fR\verrorDetail\"\xfe\x02\n" +
+	"\ferror_detail\x18\x06 \x01(\fR\verrorDetail\"\xb0\x03\n" +
 	"\rSagaExecution\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12+\n" +
@@ -999,7 +1009,9 @@ const file_proto_saga_v1_saga_proto_rawDesc = "" +
 	"created_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
 	"started_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x12=\n" +
-	"\fcompleted_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\vcompletedAt\"\xcb\x01\n" +
+	"\fcompleted_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\vcompletedAt\x120\n" +
+	"\x14saga_timeout_seconds\x18\n" +
+	" \x01(\x05R\x12sagaTimeoutSeconds\"\xcb\x01\n" +
 	"\x11CreateSagaRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12-\n" +
 	"\x05steps\x18\x02 \x03(\v2\x17.saga.v1.StepDefinitionR\x05steps\x12\x18\n" +

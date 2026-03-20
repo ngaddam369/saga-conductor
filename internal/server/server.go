@@ -292,15 +292,16 @@ func toProto(exec *saga.Execution) *pb.SagaExecution {
 	}
 
 	return &pb.SagaExecution{
-		Id:          exec.ID,
-		Name:        exec.Name,
-		Status:      toProtoSagaStatus(exec.Status),
-		Steps:       pbSteps,
-		Payload:     exec.Payload,
-		FailedStep:  exec.FailedStep,
-		CreatedAt:   timestamppb.New(exec.CreatedAt),
-		StartedAt:   timeToProto(exec.StartedAt),
-		CompletedAt: timeToProto(exec.CompletedAt),
+		Id:                 exec.ID,
+		Name:               exec.Name,
+		Status:             toProtoSagaStatus(exec.Status),
+		Steps:              pbSteps,
+		Payload:            exec.Payload,
+		FailedStep:         exec.FailedStep,
+		CreatedAt:          timestamppb.New(exec.CreatedAt),
+		StartedAt:          timeToProto(exec.StartedAt),
+		CompletedAt:        timeToProto(exec.CompletedAt),
+		SagaTimeoutSeconds: int32(exec.SagaTimeoutSeconds),
 	}
 }
 

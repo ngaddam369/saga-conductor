@@ -14,8 +14,8 @@ import (
 	"github.com/ngaddam369/saga-conductor/internal/store"
 )
 
-// Enginer is the subset of the engine required by the Scheduler.
-type Enginer interface {
+// Engine is the subset of the engine required by the Scheduler.
+type Engine interface {
 	Resume(ctx context.Context, id string) (*saga.Execution, error)
 }
 
@@ -23,11 +23,11 @@ type Enginer interface {
 // each one to a terminal state via the engine's Resume method.
 type Scheduler struct {
 	store  store.Store
-	engine Enginer
+	engine Engine
 }
 
 // New returns a Scheduler backed by the given store and engine.
-func New(s store.Store, eng Enginer) *Scheduler {
+func New(s store.Store, eng Engine) *Scheduler {
 	return &Scheduler{store: s, engine: eng}
 }
 

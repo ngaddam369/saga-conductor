@@ -435,6 +435,21 @@ func TestServer(t *testing.T) {
 		}
 	})
 
+	t.Run("saga_timeout_seconds is returned in response", func(t *testing.T) {
+		client, _ := newTestServer(t, nil)
+		resp, err := client.CreateSaga(context.Background(), &pb.CreateSagaRequest{
+			Name:               "timed-saga",
+			Steps:              validSteps(),
+			SagaTimeoutSeconds: 120,
+		})
+		if err != nil {
+			t.Fatalf("CreateSaga: %v", err)
+		}
+		if resp.Saga.SagaTimeoutSeconds != 120 {
+			t.Errorf("SagaTimeoutSeconds: got %d, want 120", resp.Saga.SagaTimeoutSeconds)
+		}
+	})
+
 	t.Run("GetSaga", func(t *testing.T) {
 		tests := []struct {
 			name     string

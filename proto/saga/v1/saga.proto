@@ -81,6 +81,9 @@ message SagaExecution {
   google.protobuf.Timestamp created_at   = 7;
   google.protobuf.Timestamp started_at   = 8;
   google.protobuf.Timestamp completed_at = 9;
+  // Per-saga execution deadline in seconds. Zero means the server-wide default
+  // was used. Mirrors the value set in CreateSagaRequest.saga_timeout_seconds.
+  int32      saga_timeout_seconds = 10;
 }
 
 // ── RPC request / response messages ──────────────────────────────────────────

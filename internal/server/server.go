@@ -47,13 +47,14 @@ type Engine interface {
 // Server implements the gRPC SagaOrchestrator service.
 type Server struct {
 	pb.UnimplementedSagaOrchestratorServer
-	store  store.Store
-	engine Engine
+	store             store.Store
+	engine            Engine
+	idempotencyKeyTTL time.Duration
 }
 
-// New returns a Server wired with the given store and engine.
-func New(s store.Store, eng Engine) *Server {
-	return &Server{store: s, engine: eng}
+// New returns a Server wired with the given store, engine, and idempotency key TTL.
+func New(s store.Store, eng Engine, idempotencyKeyTTL time.Duration) *Server {
+	return &Server{store: s, engine: eng, idempotencyKeyTTL: idempotencyKeyTTL}
 }
 
 // CreateSaga registers a new saga in PENDING state.
@@ -123,6 +124,18 @@ func (s *Server) CreateSaga(ctx context.Context, req *pb.CreateSagaRequest) (*pb
 		Payload:            req.Payload,
 		SagaTimeoutSeconds: int(req.SagaTimeoutSeconds),
 		CreatedAt:          time.Now().UTC(),
+	}
+
+	if req.IdempotencyKey != "" {
+		if len(req.IdempotencyKey) > 256 {
+			return nil, status.Error(codes.InvalidArgument, "idempotency_key exceeds 256 characters")
+		}
+		expiresAt := time.Now().UTC().Add(s.idempotencyKeyTTL)
+		result, err := s.store.GetOrCreateWithKey(ctx, req.IdempotencyKey, expiresAt, exec)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "create saga: %v", err)
+		}
+		return &pb.CreateSagaResponse{Saga: toProto(result)}, nil
 	}
 
 	if err := s.store.Create(ctx, exec); err != nil {

@@ -34,6 +34,11 @@ type Store interface {
 	// ErrAlreadyRunning if the saga is not PENDING when the write fires.
 	TransitionToRunning(ctx context.Context, id string, startedAt time.Time) (*saga.Execution, error)
 
+	// GetOrCreateWithKey atomically creates exec and records the idempotency
+	// key, or — if key was seen within its TTL — returns the existing saga
+	// without creating a new one. Expired keys are transparently overwritten.
+	GetOrCreateWithKey(ctx context.Context, key string, expiresAt time.Time, exec *saga.Execution) (*saga.Execution, error)
+
 	// Delete removes a saga execution by ID. Returns ErrNotFound if the ID
 	// does not exist.
 	Delete(ctx context.Context, id string) error

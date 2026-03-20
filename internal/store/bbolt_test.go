@@ -626,4 +626,69 @@ func TestBoltStore(t *testing.T) {
 			}
 		})
 	})
+
+	t.Run("GetOrCreateWithKey", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("first call creates saga", func(t *testing.T) {
+			t.Parallel()
+			s := newTestStore(t)
+			exec := newExec("saga-idem-1", "test", saga.SagaStatusPending)
+			result, err := s.GetOrCreateWithKey(context.Background(), "key-1", time.Now().Add(time.Hour), exec)
+			if err != nil {
+				t.Fatalf("GetOrCreateWithKey: %v", err)
+			}
+			if result.ID != exec.ID {
+				t.Errorf("ID: got %q, want %q", result.ID, exec.ID)
+			}
+			got, err := s.Get(context.Background(), exec.ID)
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if got.ID != exec.ID {
+				t.Errorf("Get ID: got %q, want %q", got.ID, exec.ID)
+			}
+		})
+
+		t.Run("duplicate key returns existing saga", func(t *testing.T) {
+			t.Parallel()
+			s := newTestStore(t)
+			exec := newExec("saga-idem-2", "test", saga.SagaStatusPending)
+			ttl := time.Now().Add(time.Hour)
+
+			if _, err := s.GetOrCreateWithKey(context.Background(), "key-dup", ttl, exec); err != nil {
+				t.Fatalf("first call: %v", err)
+			}
+
+			exec2 := newExec("saga-idem-2b", "other", saga.SagaStatusPending)
+			result, err := s.GetOrCreateWithKey(context.Background(), "key-dup", ttl, exec2)
+			if err != nil {
+				t.Fatalf("second call: %v", err)
+			}
+			if result.ID != exec.ID {
+				t.Errorf("ID: got %q, want original %q", result.ID, exec.ID)
+			}
+			if _, err := s.Get(context.Background(), exec2.ID); err == nil {
+				t.Error("exec2 should not have been created on duplicate key hit")
+			}
+		})
+
+		t.Run("expired key creates new saga", func(t *testing.T) {
+			t.Parallel()
+			s := newTestStore(t)
+			exec1 := newExec("saga-idem-exp-1", "test", saga.SagaStatusPending)
+			if _, err := s.GetOrCreateWithKey(context.Background(), "key-exp", time.Now().Add(-time.Millisecond), exec1); err != nil {
+				t.Fatalf("first call: %v", err)
+			}
+
+			exec2 := newExec("saga-idem-exp-2", "test2", saga.SagaStatusPending)
+			result, err := s.GetOrCreateWithKey(context.Background(), "key-exp", time.Now().Add(time.Hour), exec2)
+			if err != nil {
+				t.Fatalf("second call after expiry: %v", err)
+			}
+			if result.ID != exec2.ID {
+				t.Errorf("ID: got %q, want new %q", result.ID, exec2.ID)
+			}
+		})
+	})
 }

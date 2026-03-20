@@ -431,8 +431,14 @@ type CreateSagaRequest struct {
 	// If non-zero it overrides the server-wide SAGA_TIMEOUT_SECONDS env var.
 	// Valid range: 1–86400 (24 h). Zero means use the server default.
 	SagaTimeoutSeconds int32 `protobuf:"varint,4,opt,name=saga_timeout_seconds,json=sagaTimeoutSeconds,proto3" json:"saga_timeout_seconds,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// idempotency_key is an optional client-provided deduplication token. If
+	// present and matching a previous CreateSaga call within the key's TTL
+	// (IDEMPOTENCY_KEY_TTL_HOURS, default 24 h), the original saga is returned
+	// instead of creating a new one. Safe to use when retrying on network errors.
+	// Max 256 characters.
+	IdempotencyKey string `protobuf:"bytes,5,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *CreateSagaRequest) Reset() {
@@ -491,6 +497,13 @@ func (x *CreateSagaRequest) GetSagaTimeoutSeconds() int32 {
 		return x.SagaTimeoutSeconds
 	}
 	return 0
+}
+
+func (x *CreateSagaRequest) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
+	}
+	return ""
 }
 
 type CreateSagaResponse struct {
@@ -950,12 +963,13 @@ const file_proto_saga_v1_saga_proto_rawDesc = "" +
 	"created_at\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x129\n" +
 	"\n" +
 	"started_at\x18\b \x01(\v2\x1a.google.protobuf.TimestampR\tstartedAt\x12=\n" +
-	"\fcompleted_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\vcompletedAt\"\xa2\x01\n" +
+	"\fcompleted_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\vcompletedAt\"\xcb\x01\n" +
 	"\x11CreateSagaRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12-\n" +
 	"\x05steps\x18\x02 \x03(\v2\x17.saga.v1.StepDefinitionR\x05steps\x12\x18\n" +
 	"\apayload\x18\x03 \x01(\fR\apayload\x120\n" +
-	"\x14saga_timeout_seconds\x18\x04 \x01(\x05R\x12sagaTimeoutSeconds\"@\n" +
+	"\x14saga_timeout_seconds\x18\x04 \x01(\x05R\x12sagaTimeoutSeconds\x12'\n" +
+	"\x0fidempotency_key\x18\x05 \x01(\tR\x0eidempotencyKey\"@\n" +
 	"\x12CreateSagaResponse\x12*\n" +
 	"\x04saga\x18\x01 \x01(\v2\x16.saga.v1.SagaExecutionR\x04saga\"+\n" +
 	"\x10StartSagaRequest\x12\x17\n" +

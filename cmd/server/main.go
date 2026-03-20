@@ -82,7 +82,7 @@ func run() error {
 	defer purgeCancel()
 	go purger.New(s).Run(purgeCtx)
 
-	srv := server.New(s, eng)
+	srv := server.New(s, eng, time.Duration(cfg.idempotencyKeyTTLHours)*time.Hour)
 
 	handlerTimeout := time.Duration(cfg.grpcHandlerTimeoutSecs) * time.Second
 	grpcServer := grpc.NewServer(

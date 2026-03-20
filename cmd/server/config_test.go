@@ -36,38 +36,40 @@ func TestGetEnvInt(t *testing.T) {
 
 func TestLoadConfig(t *testing.T) {
 	tests := []struct {
-		name                     string
-		env                      map[string]string
-		wantGRPCAddr             string
-		wantHealthAddr           string
-		wantDBPath               string
-		wantRecvMB               int
-		wantSendMB               int
-		wantMaxConnIdleMinutes   int
-		wantKeepaliveTimeMinutes int
-		wantKeepaliveTimeoutSecs int
-		wantKeepaliveMinTimeSecs int
-		wantHealthReadSecs       int
-		wantHealthWriteSecs      int
-		wantHealthIdleSecs       int
-		wantGRPCStopTimeoutSecs  int
+		name                       string
+		env                        map[string]string
+		wantGRPCAddr               string
+		wantHealthAddr             string
+		wantDBPath                 string
+		wantRecvMB                 int
+		wantSendMB                 int
+		wantMaxConnIdleMinutes     int
+		wantKeepaliveTimeMinutes   int
+		wantKeepaliveTimeoutSecs   int
+		wantKeepaliveMinTimeSecs   int
+		wantHealthReadSecs         int
+		wantHealthWriteSecs        int
+		wantHealthIdleSecs         int
+		wantGRPCStopTimeoutSecs    int
+		wantIdempotencyKeyTTLHours int
 	}{
 		{
-			name:                     "defaults when no env vars set",
-			env:                      map[string]string{},
-			wantGRPCAddr:             ":8080",
-			wantHealthAddr:           ":8081",
-			wantDBPath:               "saga-conductor.db",
-			wantRecvMB:               4,
-			wantSendMB:               16,
-			wantMaxConnIdleMinutes:   5,
-			wantKeepaliveTimeMinutes: 2,
-			wantKeepaliveTimeoutSecs: 20,
-			wantKeepaliveMinTimeSecs: 30,
-			wantHealthReadSecs:       5,
-			wantHealthWriteSecs:      5,
-			wantHealthIdleSecs:       60,
-			wantGRPCStopTimeoutSecs:  30,
+			name:                       "defaults when no env vars set",
+			env:                        map[string]string{},
+			wantGRPCAddr:               ":8080",
+			wantHealthAddr:             ":8081",
+			wantDBPath:                 "saga-conductor.db",
+			wantRecvMB:                 4,
+			wantSendMB:                 16,
+			wantMaxConnIdleMinutes:     5,
+			wantKeepaliveTimeMinutes:   2,
+			wantKeepaliveTimeoutSecs:   20,
+			wantKeepaliveMinTimeSecs:   30,
+			wantHealthReadSecs:         5,
+			wantHealthWriteSecs:        5,
+			wantHealthIdleSecs:         60,
+			wantGRPCStopTimeoutSecs:    30,
+			wantIdempotencyKeyTTLHours: 24,
 		},
 		{
 			name: "all env vars overridden",
@@ -85,39 +87,42 @@ func TestLoadConfig(t *testing.T) {
 				"HEALTH_WRITE_TIMEOUT_SECONDS":    "10",
 				"HEALTH_IDLE_TIMEOUT_SECONDS":     "120",
 				"GRPC_STOP_TIMEOUT_SECONDS":       "60",
+				"IDEMPOTENCY_KEY_TTL_HOURS":       "48",
 			},
-			wantGRPCAddr:             ":9090",
-			wantHealthAddr:           ":9091",
-			wantDBPath:               "/data/saga.db",
-			wantRecvMB:               8,
-			wantSendMB:               32,
-			wantMaxConnIdleMinutes:   10,
-			wantKeepaliveTimeMinutes: 3,
-			wantKeepaliveTimeoutSecs: 30,
-			wantKeepaliveMinTimeSecs: 60,
-			wantHealthReadSecs:       10,
-			wantHealthWriteSecs:      10,
-			wantHealthIdleSecs:       120,
-			wantGRPCStopTimeoutSecs:  60,
+			wantGRPCAddr:               ":9090",
+			wantHealthAddr:             ":9091",
+			wantDBPath:                 "/data/saga.db",
+			wantRecvMB:                 8,
+			wantSendMB:                 32,
+			wantMaxConnIdleMinutes:     10,
+			wantKeepaliveTimeMinutes:   3,
+			wantKeepaliveTimeoutSecs:   30,
+			wantKeepaliveMinTimeSecs:   60,
+			wantHealthReadSecs:         10,
+			wantHealthWriteSecs:        10,
+			wantHealthIdleSecs:         120,
+			wantGRPCStopTimeoutSecs:    60,
+			wantIdempotencyKeyTTLHours: 48,
 		},
 		{
 			name: "invalid GRPC_MAX_RECV_MB falls back to default",
 			env: map[string]string{
 				"GRPC_MAX_RECV_MB": "bad",
 			},
-			wantGRPCAddr:             ":8080",
-			wantHealthAddr:           ":8081",
-			wantDBPath:               "saga-conductor.db",
-			wantRecvMB:               4,
-			wantSendMB:               16,
-			wantMaxConnIdleMinutes:   5,
-			wantKeepaliveTimeMinutes: 2,
-			wantKeepaliveTimeoutSecs: 20,
-			wantKeepaliveMinTimeSecs: 30,
-			wantHealthReadSecs:       5,
-			wantHealthWriteSecs:      5,
-			wantHealthIdleSecs:       60,
-			wantGRPCStopTimeoutSecs:  30,
+			wantGRPCAddr:               ":8080",
+			wantHealthAddr:             ":8081",
+			wantDBPath:                 "saga-conductor.db",
+			wantRecvMB:                 4,
+			wantSendMB:                 16,
+			wantMaxConnIdleMinutes:     5,
+			wantKeepaliveTimeMinutes:   2,
+			wantKeepaliveTimeoutSecs:   20,
+			wantKeepaliveMinTimeSecs:   30,
+			wantHealthReadSecs:         5,
+			wantHealthWriteSecs:        5,
+			wantHealthIdleSecs:         60,
+			wantGRPCStopTimeoutSecs:    30,
+			wantIdempotencyKeyTTLHours: 24,
 		},
 		{
 			name: "zero values fall back to defaults",
@@ -132,19 +137,20 @@ func TestLoadConfig(t *testing.T) {
 				"HEALTH_IDLE_TIMEOUT_SECONDS":     "0",
 				"GRPC_STOP_TIMEOUT_SECONDS":       "0",
 			},
-			wantGRPCAddr:             ":8080",
-			wantHealthAddr:           ":8081",
-			wantDBPath:               "saga-conductor.db",
-			wantRecvMB:               4,
-			wantSendMB:               16,
-			wantMaxConnIdleMinutes:   5,
-			wantKeepaliveTimeMinutes: 2,
-			wantKeepaliveTimeoutSecs: 20,
-			wantKeepaliveMinTimeSecs: 30,
-			wantHealthReadSecs:       5,
-			wantHealthWriteSecs:      5,
-			wantHealthIdleSecs:       60,
-			wantGRPCStopTimeoutSecs:  30,
+			wantGRPCAddr:               ":8080",
+			wantHealthAddr:             ":8081",
+			wantDBPath:                 "saga-conductor.db",
+			wantRecvMB:                 4,
+			wantSendMB:                 16,
+			wantMaxConnIdleMinutes:     5,
+			wantKeepaliveTimeMinutes:   2,
+			wantKeepaliveTimeoutSecs:   20,
+			wantKeepaliveMinTimeSecs:   30,
+			wantHealthReadSecs:         5,
+			wantHealthWriteSecs:        5,
+			wantHealthIdleSecs:         60,
+			wantGRPCStopTimeoutSecs:    30,
+			wantIdempotencyKeyTTLHours: 24,
 		},
 		{
 			name: "invalid keepalive and health timeout values fall back to defaults",
@@ -158,19 +164,20 @@ func TestLoadConfig(t *testing.T) {
 				"HEALTH_IDLE_TIMEOUT_SECONDS":     "abc",
 				"GRPC_STOP_TIMEOUT_SECONDS":       "bad",
 			},
-			wantGRPCAddr:             ":8080",
-			wantHealthAddr:           ":8081",
-			wantDBPath:               "saga-conductor.db",
-			wantRecvMB:               4,
-			wantSendMB:               16,
-			wantMaxConnIdleMinutes:   5,
-			wantKeepaliveTimeMinutes: 2,
-			wantKeepaliveTimeoutSecs: 20,
-			wantKeepaliveMinTimeSecs: 30,
-			wantHealthReadSecs:       5,
-			wantHealthWriteSecs:      5,
-			wantHealthIdleSecs:       60,
-			wantGRPCStopTimeoutSecs:  30,
+			wantGRPCAddr:               ":8080",
+			wantHealthAddr:             ":8081",
+			wantDBPath:                 "saga-conductor.db",
+			wantRecvMB:                 4,
+			wantSendMB:                 16,
+			wantMaxConnIdleMinutes:     5,
+			wantKeepaliveTimeMinutes:   2,
+			wantKeepaliveTimeoutSecs:   20,
+			wantKeepaliveMinTimeSecs:   30,
+			wantHealthReadSecs:         5,
+			wantHealthWriteSecs:        5,
+			wantHealthIdleSecs:         60,
+			wantGRPCStopTimeoutSecs:    30,
+			wantIdempotencyKeyTTLHours: 24,
 		},
 	}
 
@@ -220,6 +227,9 @@ func TestLoadConfig(t *testing.T) {
 			}
 			if cfg.grpcStopTimeoutSecs != tc.wantGRPCStopTimeoutSecs {
 				t.Errorf("grpcStopTimeoutSecs: got %d, want %d", cfg.grpcStopTimeoutSecs, tc.wantGRPCStopTimeoutSecs)
+			}
+			if cfg.idempotencyKeyTTLHours != tc.wantIdempotencyKeyTTLHours {
+				t.Errorf("idempotencyKeyTTLHours: got %d, want %d", cfg.idempotencyKeyTTLHours, tc.wantIdempotencyKeyTTLHours)
 			}
 		})
 	}

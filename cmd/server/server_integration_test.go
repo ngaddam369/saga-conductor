@@ -60,7 +60,7 @@ func productionGRPCServerWithEngine(t *testing.T, cfg config) (pb.SagaOrchestrat
 			PermitWithoutStream: true,
 		}),
 	)
-	pb.RegisterSagaOrchestratorServer(grpcSrv, server.New(s, eng))
+	pb.RegisterSagaOrchestratorServer(grpcSrv, server.New(s, eng, 24*time.Hour))
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -840,6 +840,46 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("IdempotencyKey", func(t *testing.T) {
+		// Two CreateSaga calls with the same idempotency_key must return the
+		// same saga ID; a third call without a key must create a fresh saga.
+		client, _ := productionGRPCServerWithEngine(t, defaultTestConfig())
+
+		req := &pb.CreateSagaRequest{
+			Name:           "idempotent-order",
+			Steps:          []*pb.StepDefinition{{Name: "s1", ForwardUrl: "http://localhost:9", CompensateUrl: "http://localhost:9"}},
+			IdempotencyKey: "order-integration-42",
+		}
+		resp1, err := client.CreateSaga(context.Background(), req)
+		if err != nil {
+			t.Fatalf("first CreateSaga: %v", err)
+		}
+		resp2, err := client.CreateSaga(context.Background(), req)
+		if err != nil {
+			t.Fatalf("second CreateSaga: %v", err)
+		}
+		if resp1.Saga.Id != resp2.Saga.Id {
+			t.Errorf("IDs differ: %q vs %q; expected same saga on duplicate key", resp1.Saga.Id, resp2.Saga.Id)
+		}
+
+		// No idempotency key → always creates a fresh saga.
+		reqNoKey := &pb.CreateSagaRequest{
+			Name:  "fresh-order",
+			Steps: []*pb.StepDefinition{{Name: "s1", ForwardUrl: "http://localhost:9", CompensateUrl: "http://localhost:9"}},
+		}
+		respA, err := client.CreateSaga(context.Background(), reqNoKey)
+		if err != nil {
+			t.Fatalf("CreateSaga no-key A: %v", err)
+		}
+		respB, err := client.CreateSaga(context.Background(), reqNoKey)
+		if err != nil {
+			t.Fatalf("CreateSaga no-key B: %v", err)
+		}
+		if respA.Saga.Id == respB.Saga.Id {
+			t.Error("no idempotency key: each call must create a distinct saga")
+		}
+	})
+
 	t.Run("CompensationDeadLetter", func(t *testing.T) {
 		// A saga whose compensation step always returns HTTP 500 must dead-letter
 		// to SAGA_STATUS_COMPENSATION_FAILED over gRPC.
@@ -988,7 +1028,7 @@ func TestIntegration(t *testing.T) {
 			t.Cleanup(func() { _ = s.Close() })
 
 			grpcSrv := grpc.NewServer()
-			pb.RegisterSagaOrchestratorServer(grpcSrv, server.New(s, engine.New(s)))
+			pb.RegisterSagaOrchestratorServer(grpcSrv, server.New(s, engine.New(s), 24*time.Hour))
 
 			lis, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
@@ -1021,7 +1061,7 @@ func TestIntegration(t *testing.T) {
 
 			eng := engine.New(s, engine.WithDefaultMaxRetries(0))
 			grpcSrv := grpc.NewServer()
-			pb.RegisterSagaOrchestratorServer(grpcSrv, server.New(s, eng))
+			pb.RegisterSagaOrchestratorServer(grpcSrv, server.New(s, eng, 24*time.Hour))
 
 			lis, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {

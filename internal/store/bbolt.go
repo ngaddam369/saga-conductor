@@ -15,7 +15,8 @@ import (
 )
 
 var (
-	bucketSagas = []byte("sagas")
+	bucketSagas           = []byte("sagas")
+	bucketIdempotencyKeys = []byte("idempotency_keys")
 
 	// ErrNotFound is returned when a saga ID does not exist in the store.
 	ErrNotFound = errors.New("saga not found")
@@ -67,10 +68,14 @@ func NewBoltStore(path string) (*BoltStore, error) {
 	}
 
 	if err := db.Update(func(tx *bbolt.Tx) error {
-		_, err := tx.CreateBucketIfNotExists(bucketSagas)
-		return err
+		for _, b := range [][]byte{bucketSagas, bucketIdempotencyKeys} {
+			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
+				return err
+			}
+		}
+		return nil
 	}); err != nil {
-		return nil, fmt.Errorf("create bucket: %w", err)
+		return nil, fmt.Errorf("create buckets: %w", err)
 	}
 
 	return &BoltStore{db: db}, nil
@@ -96,6 +101,63 @@ func (s *BoltStore) Create(_ context.Context, exec *saga.Execution) error {
 		}
 		return b.Put(key, data)
 	})
+}
+
+// idempotencyRecord is the value stored in bucketIdempotencyKeys.
+type idempotencyRecord struct {
+	SagaID    string    `json:"saga_id"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+func (s *BoltStore) GetOrCreateWithKey(_ context.Context, key string, expiresAt time.Time, exec *saga.Execution) (*saga.Execution, error) {
+	var result saga.Execution
+	err := s.db.Update(func(tx *bbolt.Tx) error {
+		kb := tx.Bucket(bucketIdempotencyKeys)
+		sb := tx.Bucket(bucketSagas)
+
+		// Check for a live idempotency record.
+		if raw := kb.Get([]byte(key)); raw != nil {
+			var rec idempotencyRecord
+			if err := json.Unmarshal(raw, &rec); err == nil && time.Now().Before(rec.ExpiresAt) {
+				// Key still valid — return the existing saga.
+				data := sb.Get([]byte(rec.SagaID))
+				if data != nil {
+					return json.Unmarshal(data, &result)
+				}
+				// Saga was deleted (e.g. pruned) — fall through to recreate.
+			}
+			// Key expired or record corrupt — overwrite below.
+		}
+
+		// Create the saga.
+		if sb.Get([]byte(exec.ID)) != nil {
+			return ErrAlreadyExists
+		}
+		data, err := json.Marshal(exec)
+		if err != nil {
+			return fmt.Errorf("marshal saga: %w", err)
+		}
+		if err := sb.Put([]byte(exec.ID), data); err != nil {
+			return err
+		}
+
+		// Record the idempotency key.
+		rec := idempotencyRecord{SagaID: exec.ID, ExpiresAt: expiresAt}
+		recData, err := json.Marshal(rec)
+		if err != nil {
+			return fmt.Errorf("marshal idempotency record: %w", err)
+		}
+		if err := kb.Put([]byte(key), recData); err != nil {
+			return err
+		}
+
+		result = *exec
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
 }
 
 func (s *BoltStore) Get(_ context.Context, id string) (*saga.Execution, error) {

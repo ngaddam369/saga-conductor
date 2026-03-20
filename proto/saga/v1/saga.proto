@@ -82,6 +82,12 @@ message CreateSagaRequest {
   // If non-zero it overrides the server-wide SAGA_TIMEOUT_SECONDS env var.
   // Valid range: 1–86400 (24 h). Zero means use the server default.
   int32  saga_timeout_seconds = 4;
+  // idempotency_key is an optional client-provided deduplication token. If
+  // present and matching a previous CreateSaga call within the key's TTL
+  // (IDEMPOTENCY_KEY_TTL_HOURS, default 24 h), the original saga is returned
+  // instead of creating a new one. Safe to use when retrying on network errors.
+  // Max 256 characters.
+  string idempotency_key = 5;
 }
 
 message CreateSagaResponse {

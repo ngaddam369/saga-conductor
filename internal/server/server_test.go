@@ -63,7 +63,7 @@ func newTestServer(t *testing.T, eng server.Engine) (pb.SagaOrchestratorClient, 
 	}
 
 	grpcSrv := grpc.NewServer(grpc.MaxRecvMsgSize(20 * 1024 * 1024))
-	pb.RegisterSagaOrchestratorServer(grpcSrv, server.New(s, eng))
+	pb.RegisterSagaOrchestratorServer(grpcSrv, server.New(s, eng, 24*time.Hour))
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -152,6 +152,74 @@ func TestServer(t *testing.T) {
 		}
 	})
 
+	t.Run("CreateSaga/IdempotencyKey", func(t *testing.T) {
+		t.Run("duplicate key returns existing saga", func(t *testing.T) {
+			client, _ := newTestServer(t, nil)
+			req := &pb.CreateSagaRequest{
+				Name:           "idempotent-saga",
+				Steps:          validSteps(),
+				IdempotencyKey: "order-42",
+			}
+			resp1, err := client.CreateSaga(context.Background(), req)
+			if err != nil {
+				t.Fatalf("first CreateSaga: %v", err)
+			}
+			resp2, err := client.CreateSaga(context.Background(), req)
+			if err != nil {
+				t.Fatalf("second CreateSaga: %v", err)
+			}
+			if resp1.Saga.Id != resp2.Saga.Id {
+				t.Errorf("IDs differ: %q vs %q; expected same saga on duplicate key", resp1.Saga.Id, resp2.Saga.Id)
+			}
+		})
+
+		t.Run("different keys create different sagas", func(t *testing.T) {
+			client, _ := newTestServer(t, nil)
+			req1 := &pb.CreateSagaRequest{Name: "saga-a", Steps: validSteps(), IdempotencyKey: "key-a"}
+			req2 := &pb.CreateSagaRequest{Name: "saga-b", Steps: validSteps(), IdempotencyKey: "key-b"}
+			resp1, err := client.CreateSaga(context.Background(), req1)
+			if err != nil {
+				t.Fatalf("CreateSaga key-a: %v", err)
+			}
+			resp2, err := client.CreateSaga(context.Background(), req2)
+			if err != nil {
+				t.Fatalf("CreateSaga key-b: %v", err)
+			}
+			if resp1.Saga.Id == resp2.Saga.Id {
+				t.Error("different keys must create different sagas")
+			}
+		})
+
+		t.Run("key too long returns InvalidArgument", func(t *testing.T) {
+			client, _ := newTestServer(t, nil)
+			req := &pb.CreateSagaRequest{
+				Name:           "saga",
+				Steps:          validSteps(),
+				IdempotencyKey: string(make([]byte, 257)),
+			}
+			_, err := client.CreateSaga(context.Background(), req)
+			if code := status.Code(err); code != codes.InvalidArgument {
+				t.Errorf("code: got %v, want InvalidArgument", code)
+			}
+		})
+
+		t.Run("no key creates independent sagas", func(t *testing.T) {
+			client, _ := newTestServer(t, nil)
+			req := &pb.CreateSagaRequest{Name: "saga", Steps: validSteps()}
+			resp1, err := client.CreateSaga(context.Background(), req)
+			if err != nil {
+				t.Fatalf("first CreateSaga: %v", err)
+			}
+			resp2, err := client.CreateSaga(context.Background(), req)
+			if err != nil {
+				t.Fatalf("second CreateSaga: %v", err)
+			}
+			if resp1.Saga.Id == resp2.Saga.Id {
+				t.Error("no idempotency key: each call must create a distinct saga")
+			}
+		})
+	})
+
 	t.Run("CreateSaga/GRPCRecvSizeLimit", func(t *testing.T) {
 		// When the gRPC server is configured with a small MaxRecvMsgSize the
 		// transport itself rejects messages above that limit with ResourceExhausted
@@ -185,7 +253,7 @@ func TestServer(t *testing.T) {
 				t.Cleanup(func() { _ = s.Close() })
 
 				grpcSrv := grpc.NewServer(grpc.MaxRecvMsgSize(tc.recvLimitMB * 1024 * 1024))
-				pb.RegisterSagaOrchestratorServer(grpcSrv, server.New(s, engine.New(s)))
+				pb.RegisterSagaOrchestratorServer(grpcSrv, server.New(s, engine.New(s), 24*time.Hour))
 
 				lis, err := net.Listen("tcp", "127.0.0.1:0")
 				if err != nil {

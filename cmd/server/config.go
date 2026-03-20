@@ -29,6 +29,9 @@ type config struct {
 	// Graceful-stop fallback: if GracefulStop does not complete within this
 	// duration, Stop() is called to force-close remaining connections.
 	grpcStopTimeoutSecs int
+
+	// Idempotency key TTL: how long CreateSaga idempotency keys are retained.
+	idempotencyKeyTTLHours int
 }
 
 func loadConfig() config {
@@ -50,6 +53,8 @@ func loadConfig() config {
 
 		grpcHandlerTimeoutSecs: getEnvInt("GRPC_HANDLER_TIMEOUT_SECONDS", 60),
 		grpcStopTimeoutSecs:    getEnvInt("GRPC_STOP_TIMEOUT_SECONDS", 30),
+
+		idempotencyKeyTTLHours: getEnvInt("IDEMPOTENCY_KEY_TTL_HOURS", 24),
 	}
 }
 

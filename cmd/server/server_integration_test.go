@@ -15,6 +15,13 @@ import (
 	"testing"
 	"time"
 
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/base64"
+	"encoding/json"
+	"math/big"
+
+	"github.com/golang-jwt/jwt/v5"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -1214,6 +1221,131 @@ func TestStaticAuth(t *testing.T) {
 		_, err := client.ListSagas(ctx, &pb.ListSagasRequest{})
 		if err != nil {
 			t.Errorf("ListSagas: unexpected error: %v", err)
+		}
+	})
+}
+
+func TestJWTAuth(t *testing.T) {
+	// Generate an RSA key, serve a JWKS, start a gRPC server with JWTValidator,
+	// and verify that:
+	//   (a) A call without a token is rejected with Unauthenticated.
+	//   (b) A call with a tampered/expired token is rejected.
+	//   (c) A call with a valid JWT is accepted.
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate RSA key: %v", err)
+	}
+	eBytes := big.NewInt(int64(rsaKey.E)).Bytes()
+	jwksBody, err := json.Marshal(map[string]any{
+		"keys": []any{
+			map[string]any{
+				"kty": "RSA",
+				"alg": "RS256",
+				"use": "sig",
+				"kid": "k1",
+				"n":   base64.RawURLEncoding.EncodeToString(rsaKey.N.Bytes()),
+				"e":   base64.RawURLEncoding.EncodeToString(eBytes),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal JWKS: %v", err)
+	}
+
+	jwksSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(jwksBody)
+	}))
+	t.Cleanup(jwksSrv.Close)
+
+	s, err := store.NewBoltStore(filepath.Join(t.TempDir(), "jwt-auth.db"))
+	if err != nil {
+		t.Fatalf("NewBoltStore: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	eng := engine.New(s)
+	validator := auth.NewJWTValidator(jwksSrv.URL, time.Minute)
+
+	grpcSrv := grpc.NewServer(
+		grpc.ChainUnaryInterceptor(server.AuthInterceptor(validator)),
+	)
+	pb.RegisterSagaOrchestratorServer(grpcSrv, server.New(s, eng, 24*time.Hour))
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = grpcSrv.Serve(lis) }()
+	t.Cleanup(grpcSrv.GracefulStop)
+
+	conn, err := grpc.NewClient(lis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	client := pb.NewSagaOrchestratorClient(conn)
+
+	mintToken := func(t *testing.T, exp time.Time) string {
+		t.Helper()
+		tok := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+			"sub": "test-caller",
+			"iat": time.Now().Unix(),
+			"exp": exp.Unix(),
+		})
+		tok.Header["kid"] = "k1"
+		signed, err := tok.SignedString(rsaKey)
+		if err != nil {
+			t.Fatalf("sign: %v", err)
+		}
+		return signed
+	}
+
+	t.Run("no token is rejected", func(t *testing.T) {
+		_, err := client.ListSagas(context.Background(), &pb.ListSagasRequest{})
+		if code := status.Code(err); code != codes.Unauthenticated {
+			t.Errorf("code: got %v, want Unauthenticated", code)
+		}
+	})
+
+	t.Run("expired token is rejected", func(t *testing.T) {
+		tok := mintToken(t, time.Now().Add(-time.Hour))
+		ctx := metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer "+tok)
+		_, err := client.ListSagas(ctx, &pb.ListSagasRequest{})
+		if code := status.Code(err); code != codes.Unauthenticated {
+			t.Errorf("code: got %v, want Unauthenticated", code)
+		}
+	})
+
+	t.Run("valid token is accepted", func(t *testing.T) {
+		tok := mintToken(t, time.Now().Add(time.Hour))
+		ctx := metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer "+tok)
+		_, err := client.ListSagas(ctx, &pb.ListSagasRequest{})
+		if err != nil {
+			t.Errorf("ListSagas: unexpected error: %v", err)
+		}
+	})
+}
+
+func TestBuildAuthProvidersJWT(t *testing.T) {
+	t.Run("jwt with URL returns providers", func(t *testing.T) {
+		t.Setenv("AUTH_JWKS_URL", "http://localhost:9999/.well-known/jwks.json")
+		src, val, err := buildAuthProviders("jwt")
+		if err != nil {
+			t.Fatalf("buildAuthProviders: %v", err)
+		}
+		if src == nil || val == nil {
+			t.Fatal("expected non-nil providers")
+		}
+	})
+
+	t.Run("jwt without URL returns error", func(t *testing.T) {
+		t.Setenv("AUTH_JWKS_URL", "")
+		_, _, err := buildAuthProviders("jwt")
+		if err == nil {
+			t.Fatal("expected error when AUTH_JWKS_URL is empty, got nil")
 		}
 	})
 }

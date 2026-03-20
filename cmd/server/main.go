@@ -262,7 +262,13 @@ func buildAuthProviders(authType string) (engine.TokenSource, server.TokenValida
 			return nil, nil, fmt.Errorf("AUTH_STATIC_TOKEN must be set when AUTH_TYPE=static")
 		}
 		return auth.NewStaticTokenSource(token), auth.NewStaticTokenValidator(token), nil
-	// Future cases: "jwt", "oidc", "svid-exchange"
+	case "jwt":
+		jwksURL := os.Getenv("AUTH_JWKS_URL")
+		if jwksURL == "" {
+			return nil, nil, fmt.Errorf("AUTH_JWKS_URL must be set when AUTH_TYPE=jwt")
+		}
+		return auth.NoopTokenSource{}, auth.NewJWTValidator(jwksURL, 0), nil
+	// Future cases: "oidc", "svid-exchange"
 	default:
 		return nil, nil, fmt.Errorf("unknown AUTH_TYPE %q", authType)
 	}

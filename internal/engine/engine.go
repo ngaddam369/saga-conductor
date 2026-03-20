@@ -168,6 +168,10 @@ func (e *Engine) markFailedBestEffort(exec *saga.Execution, step, cause string) 
 // terminal state. It is an operator escape hatch for sagas stuck in PENDING,
 // RUNNING, or COMPENSATING with no active caller.
 //
+// Abort deliberately does NOT check the draining flag. During shutdown an
+// operator may still want to abort a stuck saga; Abort does no forward work
+// and does not block shutdown.
+//
 // If the saga is RUNNING or COMPENSATING an active engine goroutine (Start or
 // Resume) may still be executing against it. Abort cannot cancel that goroutine,
 // so its subsequent store.Update calls may race with the ABORTED write. This is
@@ -219,6 +223,11 @@ func (e *Engine) Abort(ctx context.Context, id string) (*saga.Execution, error) 
 //
 // If the saga is already in a terminal state (COMPLETED or FAILED), Resume is
 // a no-op and returns the current execution without touching the store.
+//
+// Resume deliberately does NOT participate in the inflight WaitGroup. The
+// scheduler calls Resume synchronously at startup, before the gRPC server
+// starts accepting connections and before Drain() can ever be invoked, so
+// there is no shutdown race to guard against.
 func (e *Engine) Resume(ctx context.Context, id string) (*saga.Execution, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("context already done: %w", err)
@@ -476,6 +485,16 @@ func (e *Engine) Drain(ctx context.Context) []string {
 }
 
 func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) {
+	// Add to the WaitGroup BEFORE checking the draining flag. This closes the
+	// race where Drain() sets draining=true and calls Wait() while the counter
+	// is still 0: if a concurrent Start() checked the flag first (false), it
+	// will increment the counter before Drain's Wait() goroutine is scheduled,
+	// so Drain blocks until this Start() exits. If Drain's Wait() returned
+	// already (counter was 0), this Start() still checks the flag below and
+	// returns ErrDraining without running any saga — no harm done.
+	e.inflightWg.Add(1)
+	defer e.inflightWg.Done()
+
 	if e.draining.Load() {
 		return nil, ErrDraining
 	}
@@ -483,12 +502,11 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 		return nil, fmt.Errorf("context already done: %w", err)
 	}
 
+	// Register the saga ID for interrupted-saga reporting on drain timeout.
+	// Done only after passing the draining check to avoid false positives in
+	// the list returned by Drain() when it times out.
 	e.inflight.Store(id, struct{}{})
-	e.inflightWg.Add(1)
-	defer func() {
-		e.inflight.Delete(id)
-		e.inflightWg.Done()
-	}()
+	defer e.inflight.Delete(id)
 
 	exec, err := e.store.TransitionToRunning(ctx, id, time.Now().UTC())
 	if err != nil {

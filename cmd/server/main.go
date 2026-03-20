@@ -17,7 +17,10 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
+	"github.com/spiffe/go-spiffe/v2/spiffetls/tlsconfig"
+	"github.com/spiffe/go-spiffe/v2/workloadapi"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
 
 	"github.com/ngaddam369/saga-conductor/internal/engine"
@@ -61,6 +64,7 @@ func main() {
 }
 
 func run(log zerolog.Logger) error {
+	ctx := context.Background()
 	cfg := loadConfig()
 
 	s, err := store.NewBoltStore(cfg.dbPath)
@@ -74,6 +78,13 @@ func run(log zerolog.Logger) error {
 	}()
 
 	rec := newPrometheusRecorder(prometheus.DefaultRegisterer)
+
+	socketPath := os.Getenv("SPIFFE_ENDPOINT_SOCKET")
+	grpcCreds, closeGRPCCreds, err := buildGRPCCredentials(ctx, socketPath)
+	if err != nil {
+		return fmt.Errorf("grpc credentials: %w", err)
+	}
+	defer closeGRPCCreds()
 
 	tokenSrc, validator, err := buildAuthProviders(getEnv("AUTH_TYPE", "none"))
 	if err != nil {
@@ -97,13 +108,13 @@ func run(log zerolog.Logger) error {
 	srv := server.New(s, eng, time.Duration(cfg.idempotencyKeyTTLHours)*time.Hour)
 
 	handlerTimeout := time.Duration(cfg.grpcHandlerTimeoutSecs) * time.Second
-	grpcServer := grpc.NewServer(
+	grpcOpts := []grpc.ServerOption{
 		grpc.ChainUnaryInterceptor(
 			server.AuthInterceptor(validator),
 			server.TimeoutInterceptor(handlerTimeout),
 		),
-		grpc.MaxRecvMsgSize(cfg.grpcMaxRecvMB*1024*1024),
-		grpc.MaxSendMsgSize(cfg.grpcMaxSendMB*1024*1024),
+		grpc.MaxRecvMsgSize(cfg.grpcMaxRecvMB * 1024 * 1024),
+		grpc.MaxSendMsgSize(cfg.grpcMaxSendMB * 1024 * 1024),
 		grpc.KeepaliveParams(keepalive.ServerParameters{
 			MaxConnectionIdle: time.Duration(cfg.grpcMaxConnIdleMinutes) * time.Minute,
 			Time:              time.Duration(cfg.grpcKeepaliveTimeMinutes) * time.Minute,
@@ -113,7 +124,11 @@ func run(log zerolog.Logger) error {
 			MinTime:             time.Duration(cfg.grpcKeepaliveMinTimeSecs) * time.Second,
 			PermitWithoutStream: true,
 		}),
-	)
+	}
+	if grpcCreds != nil {
+		grpcOpts = append([]grpc.ServerOption{grpc.Creds(grpcCreds)}, grpcOpts...)
+	}
+	grpcServer := grpc.NewServer(grpcOpts...)
 	pb.RegisterSagaOrchestratorServer(grpcServer, srv)
 
 	lis, err := net.Listen("tcp", cfg.grpcAddr)
@@ -246,6 +261,29 @@ func run(log zerolog.Logger) error {
 	}
 
 	return nil
+}
+
+// buildGRPCCredentials returns mTLS transport credentials when socketPath is
+// non-empty, using the SPIFFE workload API at that address to obtain the
+// server's X.509 SVID and trusted CA bundles. Returns nil credentials (plain
+// TCP) when socketPath is empty. The caller must invoke the cleanup function
+// to close the workload API connection.
+func buildGRPCCredentials(ctx context.Context, socketPath string) (credentials.TransportCredentials, func(), error) {
+	if socketPath == "" {
+		return nil, func() {}, nil
+	}
+	source, err := workloadapi.NewX509Source(ctx,
+		workloadapi.WithClientOptions(workloadapi.WithAddr(socketPath)),
+	)
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("create X.509 source: %w", err)
+	}
+	tlsCfg := tlsconfig.MTLSServerConfig(source, source, tlsconfig.AuthorizeAny())
+	return credentials.NewTLS(tlsCfg), func() {
+		if err := source.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "close X.509 source: %v\n", err)
+		}
+	}, nil
 }
 
 // buildAuthProviders selects the TokenSource and TokenValidator implementations

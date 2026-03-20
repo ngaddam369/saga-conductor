@@ -1329,6 +1329,84 @@ func TestJWTAuth(t *testing.T) {
 	})
 }
 
+func TestOIDCTokenSourceInjection(t *testing.T) {
+	// Verify that when an OIDCTokenSource is wired into the engine, its token
+	// is injected as Authorization: Bearer on outbound step HTTP calls.
+	t.Setenv("STEP_MAX_RETRIES", "0")
+
+	const wantToken = "oidc-step-token"
+
+	// Fake token endpoint: returns wantToken with a 1-hour expiry.
+	tokenCalls := 0
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		tokenCalls++
+		w.Header().Set("Content-Type", "application/json")
+		body, _ := json.Marshal(map[string]any{
+			"access_token": wantToken,
+			"token_type":   "Bearer",
+			"expires_in":   3600,
+		})
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(tokenSrv.Close)
+
+	// Step server: captures the Authorization header.
+	var gotHeader string
+	stepSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(stepSrv.Close)
+
+	s, err := store.NewBoltStore(filepath.Join(t.TempDir(), "oidc-inject.db"))
+	if err != nil {
+		t.Fatalf("NewBoltStore: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	tokenSrc := auth.NewOIDCTokenSource(tokenSrv.URL, "client-id", "client-secret", nil)
+	eng := engine.New(s, engine.WithTokenSource(tokenSrc), engine.WithDefaultMaxRetries(0))
+
+	grpcSrv := grpc.NewServer()
+	pb.RegisterSagaOrchestratorServer(grpcSrv, server.New(s, eng, 24*time.Hour))
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = grpcSrv.Serve(lis) }()
+	t.Cleanup(grpcSrv.GracefulStop)
+
+	conn, err := grpc.NewClient(lis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	client := pb.NewSagaOrchestratorClient(conn)
+
+	created, err := client.CreateSaga(context.Background(), &pb.CreateSagaRequest{
+		Name: "oidc-inject-saga",
+		Steps: []*pb.StepDefinition{
+			{Name: "step-1", ForwardUrl: stepSrv.URL, CompensateUrl: stepSrv.URL},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSaga: %v", err)
+	}
+	if _, err := client.StartSaga(context.Background(), &pb.StartSagaRequest{SagaId: created.Saga.Id}); err != nil {
+		t.Fatalf("StartSaga: %v", err)
+	}
+
+	wantHeader := "Bearer " + wantToken
+	if gotHeader != wantHeader {
+		t.Errorf("Authorization header: got %q, want %q", gotHeader, wantHeader)
+	}
+	if tokenCalls != 1 {
+		t.Errorf("token endpoint called %d times; want 1", tokenCalls)
+	}
+}
+
 func TestBuildAuthProvidersJWT(t *testing.T) {
 	t.Run("jwt with URL returns providers", func(t *testing.T) {
 		t.Setenv("AUTH_JWKS_URL", "http://localhost:9999/.well-known/jwks.json")
@@ -1346,6 +1424,48 @@ func TestBuildAuthProvidersJWT(t *testing.T) {
 		_, _, err := buildAuthProviders("jwt")
 		if err == nil {
 			t.Fatal("expected error when AUTH_JWKS_URL is empty, got nil")
+		}
+	})
+}
+
+func TestBuildAuthProvidersOIDC(t *testing.T) {
+	t.Run("oidc with all vars returns providers", func(t *testing.T) {
+		t.Setenv("AUTH_OIDC_TOKEN_URL", "http://localhost:9999/token")
+		t.Setenv("AUTH_OIDC_CLIENT_ID", "my-client")
+		t.Setenv("AUTH_OIDC_CLIENT_SECRET", "my-secret")
+		src, val, err := buildAuthProviders("oidc")
+		if err != nil {
+			t.Fatalf("buildAuthProviders: %v", err)
+		}
+		if src == nil || val == nil {
+			t.Fatal("expected non-nil providers")
+		}
+	})
+
+	t.Run("oidc missing TOKEN_URL returns error", func(t *testing.T) {
+		t.Setenv("AUTH_OIDC_TOKEN_URL", "")
+		t.Setenv("AUTH_OIDC_CLIENT_ID", "my-client")
+		t.Setenv("AUTH_OIDC_CLIENT_SECRET", "my-secret")
+		if _, _, err := buildAuthProviders("oidc"); err == nil {
+			t.Fatal("expected error when AUTH_OIDC_TOKEN_URL is empty, got nil")
+		}
+	})
+
+	t.Run("oidc missing CLIENT_ID returns error", func(t *testing.T) {
+		t.Setenv("AUTH_OIDC_TOKEN_URL", "http://localhost:9999/token")
+		t.Setenv("AUTH_OIDC_CLIENT_ID", "")
+		t.Setenv("AUTH_OIDC_CLIENT_SECRET", "my-secret")
+		if _, _, err := buildAuthProviders("oidc"); err == nil {
+			t.Fatal("expected error when AUTH_OIDC_CLIENT_ID is empty, got nil")
+		}
+	})
+
+	t.Run("oidc missing CLIENT_SECRET returns error", func(t *testing.T) {
+		t.Setenv("AUTH_OIDC_TOKEN_URL", "http://localhost:9999/token")
+		t.Setenv("AUTH_OIDC_CLIENT_ID", "my-client")
+		t.Setenv("AUTH_OIDC_CLIENT_SECRET", "")
+		if _, _, err := buildAuthProviders("oidc"); err == nil {
+			t.Fatal("expected error when AUTH_OIDC_CLIENT_SECRET is empty, got nil")
 		}
 	})
 }

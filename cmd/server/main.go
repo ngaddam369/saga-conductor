@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -250,7 +251,7 @@ func run(log zerolog.Logger) error {
 // based on authType. It is a pure function — no I/O — so it is easy to test.
 //
 // "none" (default): Noop implementations — open server, no outbound token.
-// Future cases ("static", "jwt", "oidc", "svid-exchange") are added here;
+// Future cases ("svid-exchange") are added here;
 // the interfaces in internal/engine and internal/server never change.
 func buildAuthProviders(authType string) (engine.TokenSource, server.TokenValidator, error) {
 	switch authType {
@@ -268,7 +269,19 @@ func buildAuthProviders(authType string) (engine.TokenSource, server.TokenValida
 			return nil, nil, fmt.Errorf("AUTH_JWKS_URL must be set when AUTH_TYPE=jwt")
 		}
 		return auth.NoopTokenSource{}, auth.NewJWTValidator(jwksURL, 0), nil
-	// Future cases: "oidc", "svid-exchange"
+	case "oidc":
+		tokenURL := os.Getenv("AUTH_OIDC_TOKEN_URL")
+		clientID := os.Getenv("AUTH_OIDC_CLIENT_ID")
+		clientSecret := os.Getenv("AUTH_OIDC_CLIENT_SECRET")
+		if tokenURL == "" || clientID == "" || clientSecret == "" {
+			return nil, nil, fmt.Errorf("AUTH_OIDC_TOKEN_URL, AUTH_OIDC_CLIENT_ID, and AUTH_OIDC_CLIENT_SECRET must all be set when AUTH_TYPE=oidc")
+		}
+		var scopes []string
+		if s := os.Getenv("AUTH_OIDC_SCOPES"); s != "" {
+			scopes = strings.Fields(s)
+		}
+		return auth.NewOIDCTokenSource(tokenURL, clientID, clientSecret, scopes), auth.NoopTokenValidator{}, nil
+	// Future cases: "svid-exchange"
 	default:
 		return nil, nil, fmt.Errorf("unknown AUTH_TYPE %q", authType)
 	}

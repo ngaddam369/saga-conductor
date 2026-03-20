@@ -9,12 +9,13 @@ import (
 // Terminal states (COMPLETED, FAILED) have empty target sets — no transition
 // out of a terminal state is ever valid.
 var validSagaTransitions = map[SagaStatus][]SagaStatus{
-	SagaStatusPending:      {SagaStatusRunning, SagaStatusAborted},
-	SagaStatusRunning:      {SagaStatusCompleted, SagaStatusCompensating, SagaStatusFailed, SagaStatusAborted},
-	SagaStatusCompensating: {SagaStatusFailed, SagaStatusAborted},
-	SagaStatusCompleted:    {},
-	SagaStatusFailed:       {},
-	SagaStatusAborted:      {},
+	SagaStatusPending:            {SagaStatusRunning, SagaStatusAborted},
+	SagaStatusRunning:            {SagaStatusCompleted, SagaStatusCompensating, SagaStatusFailed, SagaStatusAborted},
+	SagaStatusCompensating:       {SagaStatusFailed, SagaStatusAborted, SagaStatusCompensationFailed},
+	SagaStatusCompleted:          {},
+	SagaStatusFailed:             {},
+	SagaStatusAborted:            {},
+	SagaStatusCompensationFailed: {},
 }
 
 // validStepTransitions defines every permitted step status change.

@@ -193,11 +193,14 @@ func TestEngine(t *testing.T) {
 		})
 
 		exec, err := eng.Start(context.Background(), "saga-1")
-		if err != nil {
-			t.Fatalf("Start: %v", err)
+		if err == nil {
+			t.Fatal("Start: expected error when compensation exhausts retries, got nil")
 		}
-		if exec.Status != saga.SagaStatusFailed {
-			t.Errorf("Status: got %q, want FAILED", exec.Status)
+		if exec == nil {
+			t.Fatal("Start: expected non-nil exec even on compensation failure")
+		}
+		if exec.Status != saga.SagaStatusCompensationFailed {
+			t.Errorf("Status: got %q, want COMPENSATION_FAILED", exec.Status)
 		}
 		if exec.Steps[0].Status != saga.StepStatusCompensationFailed {
 			t.Errorf("step-1 Status: got %q, want COMPENSATION_FAILED", exec.Steps[0].Status)
@@ -975,6 +978,88 @@ func TestEngine(t *testing.T) {
 		_, err := eng.Start(context.Background(), "saga-1")
 		if !errors.Is(err, engine.ErrDraining) {
 			t.Errorf("Start after Drain: got %v, want ErrDraining", err)
+		}
+	})
+
+	t.Run("CompensationRetrySucceeds", func(t *testing.T) {
+		// Compensation step fails once then succeeds — saga reaches FAILED
+		// (all compensations done), not COMPENSATION_FAILED.
+		eng, s := newEngine(t)
+
+		fwd, _ := stepServer(t, http.StatusOK)
+
+		compCalls := 0
+		comp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			compCalls++
+			if compCalls == 1 {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(comp.Close)
+
+		fwd2, _ := stepServer(t, http.StatusInternalServerError) // triggers compensation
+
+		// Give compensation one retry so the second attempt succeeds.
+		eng2 := engine.New(s, engine.WithRetryBackoff(time.Millisecond), engine.WithDefaultMaxRetries(1))
+
+		seedSaga(t, s, []saga.StepDefinition{
+			{Name: "step-1", ForwardURL: fwd.URL, CompensateURL: comp.URL},
+			{Name: "step-2", ForwardURL: fwd2.URL, CompensateURL: comp.URL},
+		})
+
+		exec, err := eng2.Start(context.Background(), "saga-1")
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if exec.Status != saga.SagaStatusFailed {
+			t.Errorf("status: got %q, want FAILED", exec.Status)
+		}
+		if compCalls != 2 {
+			t.Errorf("compensation calls: got %d, want 2 (1 fail + 1 succeed)", compCalls)
+		}
+		_ = eng // silence unused variable
+	})
+
+	t.Run("CompensationExhaustsRetries", func(t *testing.T) {
+		// Compensation step always fails — saga dead-letters to COMPENSATION_FAILED
+		// and compensation halts on the first irrecoverable failure.
+		_, s := newEngine(t)
+
+		fwd, _ := stepServer(t, http.StatusOK)
+		comp, compCalls := stepServer(t, http.StatusInternalServerError)
+		fwd2, _ := stepServer(t, http.StatusInternalServerError) // triggers compensation
+
+		eng := engine.New(s, engine.WithRetryBackoff(time.Millisecond), engine.WithDefaultMaxRetries(1))
+
+		seedSaga(t, s, []saga.StepDefinition{
+			{Name: "step-1", ForwardURL: fwd.URL, CompensateURL: comp.URL},
+			{Name: "step-2", ForwardURL: fwd2.URL, CompensateURL: comp.URL},
+		})
+
+		exec, err := eng.Start(context.Background(), "saga-1")
+		if err == nil {
+			t.Fatal("Start: expected error, got nil")
+		}
+		if exec == nil {
+			t.Fatal("Start: expected execution to be returned alongside error")
+		}
+		if exec.Status != saga.SagaStatusCompensationFailed {
+			t.Errorf("status: got %q, want COMPENSATION_FAILED", exec.Status)
+		}
+		// step-1 compensation should have been attempted (1 initial + 1 retry = 2),
+		// then halted — step-2 compensation never attempted.
+		if *compCalls != 2 {
+			t.Errorf("compensation calls: got %d, want 2 (retries on step-1 only)", *compCalls)
+		}
+		// The failed step's ErrorDetail must be populated.
+		step1 := exec.Steps[0]
+		if step1.Status != saga.StepStatusCompensationFailed {
+			t.Errorf("step-1 status: got %q, want COMPENSATION_FAILED", step1.Status)
+		}
+		if step1.ErrorDetail == nil {
+			t.Error("step-1 ErrorDetail: got nil, want populated StepError")
 		}
 	})
 }

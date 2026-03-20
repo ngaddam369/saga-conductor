@@ -840,6 +840,59 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("CompensationDeadLetter", func(t *testing.T) {
+		// A saga whose compensation step always returns HTTP 500 must dead-letter
+		// to SAGA_STATUS_COMPENSATION_FAILED over gRPC.
+		t.Setenv("STEP_MAX_RETRIES", "0")
+
+		fwd1Srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(fwd1Srv.Close)
+
+		fwd2Srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		t.Cleanup(fwd2Srv.Close)
+
+		compSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		t.Cleanup(compSrv.Close)
+
+		client, _ := productionGRPCServerWithEngine(t, defaultTestConfig())
+
+		created, err := client.CreateSaga(context.Background(), &pb.CreateSagaRequest{
+			Name: "dead-letter-saga",
+			Steps: []*pb.StepDefinition{
+				{Name: "step-1", ForwardUrl: fwd1Srv.URL, CompensateUrl: compSrv.URL},
+				{Name: "step-2", ForwardUrl: fwd2Srv.URL, CompensateUrl: compSrv.URL},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateSaga: %v", err)
+		}
+
+		// StartSaga returns an error on compensation exhaustion but also
+		// the final saga state via GetSaga.
+		_, _ = client.StartSaga(context.Background(), &pb.StartSagaRequest{SagaId: created.Saga.Id})
+
+		got, err := client.GetSaga(context.Background(), &pb.GetSagaRequest{SagaId: created.Saga.Id})
+		if err != nil {
+			t.Fatalf("GetSaga: %v", err)
+		}
+		if got.Saga.Status != pb.SagaStatus_SAGA_STATUS_COMPENSATION_FAILED {
+			t.Errorf("saga status: got %v, want COMPENSATION_FAILED", got.Saga.Status)
+		}
+		// step-1 compensation failed; step-2 was never compensated (halt-on-failure)
+		if got.Saga.Steps[0].Status != pb.StepStatus_STEP_STATUS_COMPENSATION_FAILED {
+			t.Errorf("step-1 status: got %v, want COMPENSATION_FAILED", got.Saga.Steps[0].Status)
+		}
+		if got.Saga.Steps[1].Status != pb.StepStatus_STEP_STATUS_FAILED {
+			t.Errorf("step-2 status: got %v, want FAILED", got.Saga.Steps[1].Status)
+		}
+	})
+
 	t.Run("GracefulDrain", func(t *testing.T) {
 		// While a StartSaga call is in-flight, simulate the SIGTERM shutdown
 		// sequence by calling eng.Drain. Verify:

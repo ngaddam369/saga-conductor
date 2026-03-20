@@ -417,12 +417,27 @@ compensate:
 			step.Status = saga.StepStatusCompensationFailed
 			step.Error = fmt.Sprintf("compensation failed: %s", compErr)
 			step.ErrorDetail = compDetail
-		} else {
-			if verr := saga.ValidateStepTransition(step.Status, saga.StepStatusCompensated); verr != nil {
-				return nil, fmt.Errorf("state machine: %w", verr)
+
+			// Dead-letter the saga immediately. Continuing to compensate later
+			// steps after one compensation has failed would leave the system in
+			// an even more inconsistent state. Operators must intervene.
+			if err = saga.ValidateTransition(exec.Status, saga.SagaStatusCompensationFailed); err != nil {
+				return nil, fmt.Errorf("state machine: %w", err)
 			}
-			step.Status = saga.StepStatusCompensated
+			now := time.Now().UTC()
+			exec.Status = saga.SagaStatusCompensationFailed
+			exec.CompletedAt = &now
+			if err = e.updateWithRetry(compCtx, exec); err != nil {
+				e.markFailedBestEffort(exec, step.Name, err.Error())
+				return nil, fmt.Errorf("persist COMPENSATION_FAILED: %w", err)
+			}
+			return exec, fmt.Errorf("compensation halted: step %q exhausted retries: %s", step.Name, compErr)
 		}
+
+		if verr := saga.ValidateStepTransition(step.Status, saga.StepStatusCompensated); verr != nil {
+			return nil, fmt.Errorf("state machine: %w", verr)
+		}
+		step.Status = saga.StepStatusCompensated
 
 		if err = e.updateWithRetry(compCtx, exec); err != nil {
 			e.markFailedBestEffort(exec, step.Name, err.Error())
@@ -638,12 +653,27 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 			step.Status = saga.StepStatusCompensationFailed
 			step.Error = fmt.Sprintf("compensation failed: %s", compErr)
 			step.ErrorDetail = compDetail
-		} else {
-			if verr := saga.ValidateStepTransition(step.Status, saga.StepStatusCompensated); verr != nil {
-				return nil, fmt.Errorf("state machine: %w", verr)
+
+			// Dead-letter the saga immediately. Continuing to compensate later
+			// steps after one compensation has failed would leave the system in
+			// an even more inconsistent state. Operators must intervene.
+			if err = saga.ValidateTransition(exec.Status, saga.SagaStatusCompensationFailed); err != nil {
+				return nil, fmt.Errorf("state machine: %w", err)
 			}
-			step.Status = saga.StepStatusCompensated
+			now := time.Now().UTC()
+			exec.Status = saga.SagaStatusCompensationFailed
+			exec.CompletedAt = &now
+			if err = e.updateWithRetry(compCtx, exec); err != nil {
+				e.markFailedBestEffort(exec, step.Name, err.Error())
+				return nil, fmt.Errorf("persist COMPENSATION_FAILED: %w", err)
+			}
+			return exec, fmt.Errorf("compensation halted: step %q exhausted retries: %s", step.Name, compErr)
 		}
+
+		if verr := saga.ValidateStepTransition(step.Status, saga.StepStatusCompensated); verr != nil {
+			return nil, fmt.Errorf("state machine: %w", verr)
+		}
+		step.Status = saga.StepStatusCompensated
 
 		if err = e.updateWithRetry(compCtx, exec); err != nil {
 			e.markFailedBestEffort(exec, step.Name, err.Error())

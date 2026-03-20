@@ -293,6 +293,8 @@ func toProtoSagaStatus(s saga.SagaStatus) pb.SagaStatus {
 		return pb.SagaStatus_SAGA_STATUS_FAILED
 	case saga.SagaStatusAborted:
 		return pb.SagaStatus_SAGA_STATUS_ABORTED
+	case saga.SagaStatusCompensationFailed:
+		return pb.SagaStatus_SAGA_STATUS_COMPENSATION_FAILED
 	default:
 		return pb.SagaStatus_SAGA_STATUS_UNSPECIFIED
 	}
@@ -333,6 +335,8 @@ func fromProtoStatus(s pb.SagaStatus) saga.SagaStatus {
 		return saga.SagaStatusFailed
 	case pb.SagaStatus_SAGA_STATUS_ABORTED:
 		return saga.SagaStatusAborted
+	case pb.SagaStatus_SAGA_STATUS_COMPENSATION_FAILED:
+		return saga.SagaStatusCompensationFailed
 	default:
 		return ""
 	}

@@ -16,6 +16,11 @@ const (
 	// It is used to forcibly terminate a stuck saga (PENDING, RUNNING, or
 	// COMPENSATING) when the natural failure path is unavailable or too slow.
 	SagaStatusAborted SagaStatus = "ABORTED"
+	// SagaStatusCompensationFailed is a dead-letter terminal state reached when
+	// a compensation step exhausts its retries. Compensation halts immediately —
+	// later steps are not attempted — because continuing could leave the system
+	// in an even more inconsistent state. Manual operator intervention is needed.
+	SagaStatusCompensationFailed SagaStatus = "COMPENSATION_FAILED"
 )
 
 // StepStatus is the state of an individual step within a saga.

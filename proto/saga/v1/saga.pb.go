@@ -33,6 +33,10 @@ const (
 	SagaStatus_SAGA_STATUS_FAILED       SagaStatus = 5
 	// SAGA_STATUS_ABORTED is set by the AbortSaga RPC. Terminal state.
 	SagaStatus_SAGA_STATUS_ABORTED SagaStatus = 6
+	// SAGA_STATUS_COMPENSATION_FAILED is set when a compensation step exhausts
+	// its retries. The saga is dead-lettered — compensation halted, system may
+	// be in a partially-compensated state requiring manual intervention.
+	SagaStatus_SAGA_STATUS_COMPENSATION_FAILED SagaStatus = 7
 )
 
 // Enum value maps for SagaStatus.
@@ -45,15 +49,17 @@ var (
 		4: "SAGA_STATUS_COMPLETED",
 		5: "SAGA_STATUS_FAILED",
 		6: "SAGA_STATUS_ABORTED",
+		7: "SAGA_STATUS_COMPENSATION_FAILED",
 	}
 	SagaStatus_value = map[string]int32{
-		"SAGA_STATUS_UNSPECIFIED":  0,
-		"SAGA_STATUS_PENDING":      1,
-		"SAGA_STATUS_RUNNING":      2,
-		"SAGA_STATUS_COMPENSATING": 3,
-		"SAGA_STATUS_COMPLETED":    4,
-		"SAGA_STATUS_FAILED":       5,
-		"SAGA_STATUS_ABORTED":      6,
+		"SAGA_STATUS_UNSPECIFIED":         0,
+		"SAGA_STATUS_PENDING":             1,
+		"SAGA_STATUS_RUNNING":             2,
+		"SAGA_STATUS_COMPENSATING":        3,
+		"SAGA_STATUS_COMPLETED":           4,
+		"SAGA_STATUS_FAILED":              5,
+		"SAGA_STATUS_ABORTED":             6,
+		"SAGA_STATUS_COMPENSATION_FAILED": 7,
 	}
 )
 
@@ -971,7 +977,7 @@ const file_proto_saga_v1_saga_proto_rawDesc = "" +
 	"\x10AbortSagaRequest\x12\x17\n" +
 	"\asaga_id\x18\x01 \x01(\tR\x06sagaId\"?\n" +
 	"\x11AbortSagaResponse\x12*\n" +
-	"\x04saga\x18\x01 \x01(\v2\x16.saga.v1.SagaExecutionR\x04saga*\xc5\x01\n" +
+	"\x04saga\x18\x01 \x01(\v2\x16.saga.v1.SagaExecutionR\x04saga*\xea\x01\n" +
 	"\n" +
 	"SagaStatus\x12\x1b\n" +
 	"\x17SAGA_STATUS_UNSPECIFIED\x10\x00\x12\x17\n" +
@@ -980,7 +986,8 @@ const file_proto_saga_v1_saga_proto_rawDesc = "" +
 	"\x18SAGA_STATUS_COMPENSATING\x10\x03\x12\x19\n" +
 	"\x15SAGA_STATUS_COMPLETED\x10\x04\x12\x16\n" +
 	"\x12SAGA_STATUS_FAILED\x10\x05\x12\x17\n" +
-	"\x13SAGA_STATUS_ABORTED\x10\x06*\xee\x01\n" +
+	"\x13SAGA_STATUS_ABORTED\x10\x06\x12#\n" +
+	"\x1fSAGA_STATUS_COMPENSATION_FAILED\x10\a*\xee\x01\n" +
 	"\n" +
 	"StepStatus\x12\x1b\n" +
 	"\x17STEP_STATUS_UNSPECIFIED\x10\x00\x12\x17\n" +

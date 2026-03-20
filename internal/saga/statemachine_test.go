@@ -22,6 +22,8 @@ func TestValidateTransition(t *testing.T) {
 		{saga.SagaStatusPending, saga.SagaStatusAborted},
 		{saga.SagaStatusRunning, saga.SagaStatusAborted},
 		{saga.SagaStatusCompensating, saga.SagaStatusAborted},
+		// compensation dead-letter
+		{saga.SagaStatusCompensating, saga.SagaStatusCompensationFailed},
 	}
 	for _, tc := range valid {
 		if err := saga.ValidateTransition(tc.from, tc.to); err != nil {
@@ -39,6 +41,8 @@ func TestValidateTransition(t *testing.T) {
 		{saga.SagaStatusCompleted, saga.SagaStatusFailed},
 		{saga.SagaStatusAborted, saga.SagaStatusRunning},
 		{saga.SagaStatusAborted, saga.SagaStatusPending},
+		{saga.SagaStatusCompensationFailed, saga.SagaStatusRunning},
+		{saga.SagaStatusCompensationFailed, saga.SagaStatusCompensating},
 		// skipping states
 		{saga.SagaStatusPending, saga.SagaStatusCompleted},
 		{saga.SagaStatusPending, saga.SagaStatusFailed},

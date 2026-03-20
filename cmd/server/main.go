@@ -256,7 +256,13 @@ func buildAuthProviders(authType string) (engine.TokenSource, server.TokenValida
 	switch authType {
 	case "none":
 		return auth.NoopTokenSource{}, auth.NoopTokenValidator{}, nil
-	// Future cases: "static", "jwt", "oidc", "svid-exchange"
+	case "static":
+		token := os.Getenv("AUTH_STATIC_TOKEN")
+		if token == "" {
+			return nil, nil, fmt.Errorf("AUTH_STATIC_TOKEN must be set when AUTH_TYPE=static")
+		}
+		return auth.NewStaticTokenSource(token), auth.NewStaticTokenValidator(token), nil
+	// Future cases: "jwt", "oidc", "svid-exchange"
 	default:
 		return nil, nil, fmt.Errorf("unknown AUTH_TYPE %q", authType)
 	}

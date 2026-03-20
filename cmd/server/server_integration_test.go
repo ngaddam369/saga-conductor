@@ -19,6 +19,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -29,6 +30,7 @@ import (
 	"github.com/ngaddam369/saga-conductor/internal/saga"
 	"github.com/ngaddam369/saga-conductor/internal/server"
 	"github.com/ngaddam369/saga-conductor/internal/store"
+	"github.com/ngaddam369/saga-conductor/pkg/auth"
 	pb "github.com/ngaddam369/saga-conductor/proto/saga/v1"
 )
 
@@ -1150,6 +1152,90 @@ func TestIntegration(t *testing.T) {
 		_, err = conn.Read(buf)
 		if err == nil {
 			t.Error("expected connection to be closed by ReadTimeout, got no error")
+		}
+	})
+}
+
+func TestStaticAuth(t *testing.T) {
+	// Start a gRPC server with StaticTokenValidator("secret") wired into
+	// AuthInterceptor.  Verify that:
+	//   (a) A call without an Authorization header is rejected with Unauthenticated.
+	//   (b) A call with the wrong token is rejected with Unauthenticated.
+	//   (c) A call with the correct Bearer token succeeds.
+	const secret = "integration-test-secret"
+
+	s, err := store.NewBoltStore(filepath.Join(t.TempDir(), "auth.db"))
+	if err != nil {
+		t.Fatalf("NewBoltStore: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	eng := engine.New(s)
+	validator := auth.NewStaticTokenValidator(secret)
+
+	grpcSrv := grpc.NewServer(
+		grpc.ChainUnaryInterceptor(server.AuthInterceptor(validator)),
+	)
+	pb.RegisterSagaOrchestratorServer(grpcSrv, server.New(s, eng, 24*time.Hour))
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = grpcSrv.Serve(lis) }()
+	t.Cleanup(grpcSrv.GracefulStop)
+
+	conn, err := grpc.NewClient(lis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	client := pb.NewSagaOrchestratorClient(conn)
+
+	t.Run("no token is rejected", func(t *testing.T) {
+		_, err := client.ListSagas(context.Background(), &pb.ListSagasRequest{})
+		if code := status.Code(err); code != codes.Unauthenticated {
+			t.Errorf("code: got %v, want Unauthenticated", code)
+		}
+	})
+
+	t.Run("wrong token is rejected", func(t *testing.T) {
+		ctx := metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer wrong-token")
+		_, err := client.ListSagas(ctx, &pb.ListSagasRequest{})
+		if code := status.Code(err); code != codes.Unauthenticated {
+			t.Errorf("code: got %v, want Unauthenticated", code)
+		}
+	})
+
+	t.Run("correct token is accepted", func(t *testing.T) {
+		ctx := metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer "+secret)
+		_, err := client.ListSagas(ctx, &pb.ListSagasRequest{})
+		if err != nil {
+			t.Errorf("ListSagas: unexpected error: %v", err)
+		}
+	})
+}
+
+func TestBuildAuthProvidersStatic(t *testing.T) {
+	t.Run("static with token returns providers", func(t *testing.T) {
+		t.Setenv("AUTH_TYPE", "static")
+		t.Setenv("AUTH_STATIC_TOKEN", "my-key")
+		src, val, err := buildAuthProviders("static")
+		if err != nil {
+			t.Fatalf("buildAuthProviders: %v", err)
+		}
+		if src == nil || val == nil {
+			t.Fatal("expected non-nil providers")
+		}
+	})
+
+	t.Run("static without token returns error", func(t *testing.T) {
+		t.Setenv("AUTH_STATIC_TOKEN", "")
+		_, _, err := buildAuthProviders("static")
+		if err == nil {
+			t.Fatal("expected error when AUTH_STATIC_TOKEN is empty, got nil")
 		}
 	})
 }

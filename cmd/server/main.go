@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
@@ -69,7 +71,8 @@ func run(log zerolog.Logger) error {
 		}
 	}()
 
-	eng := engine.New(s, engine.WithLogger(log))
+	rec := newPrometheusRecorder(prometheus.DefaultRegisterer)
+	eng := engine.New(s, engine.WithLogger(log), engine.WithRecorder(rec))
 
 	// Resume any sagas left in RUNNING or COMPENSATING state by a previous crash.
 	resumeCtx := log.WithContext(context.Background())
@@ -113,6 +116,7 @@ func run(log zerolog.Logger) error {
 	ready.Store(true)
 
 	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/health/live", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
 		defer cancel()

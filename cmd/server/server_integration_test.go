@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,9 +21,12 @@ import (
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 
 	"github.com/ngaddam369/saga-conductor/internal/engine"
+	"github.com/ngaddam369/saga-conductor/internal/saga"
 	"github.com/ngaddam369/saga-conductor/internal/server"
 	"github.com/ngaddam369/saga-conductor/internal/store"
 	pb "github.com/ngaddam369/saga-conductor/proto/saga/v1"
@@ -1148,4 +1152,82 @@ func TestIntegration(t *testing.T) {
 			t.Error("expected connection to be closed by ReadTimeout, got no error")
 		}
 	})
+}
+
+func TestMetricsEndpoint(t *testing.T) {
+	t.Parallel()
+
+	// Use a fresh registry per test to avoid duplicate-registration panics.
+	reg := prometheus.NewRegistry()
+	rec := newPrometheusRecorder(reg)
+
+	s, err := store.NewBoltStore(filepath.Join(t.TempDir(), "metrics.db"))
+	if err != nil {
+		t.Fatalf("NewBoltStore: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	eng := engine.New(s, engine.WithRecorder(rec))
+
+	// Spin up an HTTP server with /metrics backed by our custom registry.
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+	httpSrv := httptest.NewServer(mux)
+	t.Cleanup(httpSrv.Close)
+
+	// Run a two-step saga so we get both saga and step metrics.
+	fwd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(fwd.Close)
+
+	createErr := s.Create(context.Background(), &saga.Execution{
+		ID:      "m-saga-1",
+		Status:  saga.SagaStatusPending,
+		Payload: []byte(`{}`),
+		StepDefs: []saga.StepDefinition{
+			{Name: "step1", ForwardURL: fwd.URL, CompensateURL: fwd.URL},
+		},
+		Steps: []saga.StepExecution{
+			{Name: "step1", Status: saga.StepStatusPending},
+		},
+	})
+	if createErr != nil {
+		t.Fatalf("Create: %v", createErr)
+	}
+	if _, err := eng.Start(context.Background(), "m-saga-1"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	resp, err := http.Get(httpSrv.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /metrics: want 200, got %d", resp.StatusCode)
+	}
+
+	var body bytes.Buffer
+	if _, err := body.ReadFrom(resp.Body); err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	text := body.String()
+
+	for _, want := range []string{
+		"saga_conductor_saga_total",
+		"saga_conductor_saga_duration_seconds",
+		"saga_conductor_step_total",
+		"saga_conductor_step_duration_seconds",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("/metrics body missing %q", want)
+		}
+	}
+
+	// Verify the saga completed counter is present with label status=COMPLETED.
+	if !strings.Contains(text, `saga_conductor_saga_total{status="COMPLETED"}`) {
+		t.Errorf("/metrics missing saga_conductor_saga_total{status=COMPLETED}; got:\n%s", text)
+	}
 }

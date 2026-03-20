@@ -1467,3 +1467,162 @@ func TestEngineLogging(t *testing.T) {
 		}
 	})
 }
+
+// fakeRecorder is a thread-safe Recorder that captures calls for assertion.
+type fakeRecorder struct {
+	mu    sync.Mutex
+	sagas []sagaRecord
+	steps []stepRecord
+}
+
+type sagaRecord struct {
+	status      saga.SagaStatus
+	durationSec float64
+}
+
+type stepRecord struct {
+	status      saga.StepStatus
+	durationSec float64
+}
+
+func (r *fakeRecorder) RecordSaga(status saga.SagaStatus, durationSecs float64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sagas = append(r.sagas, sagaRecord{status, durationSecs})
+}
+
+func (r *fakeRecorder) RecordStep(status saga.StepStatus, durationSecs float64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.steps = append(r.steps, stepRecord{status, durationSecs})
+}
+
+func TestEngineRecorder(t *testing.T) {
+	t.Parallel()
+
+	newEngineWithRecorder := func(t *testing.T, rec engine.Recorder) (*engine.Engine, *store.BoltStore) {
+		t.Helper()
+		s, err := store.NewBoltStore(filepath.Join(t.TempDir(), "rec.db"))
+		if err != nil {
+			t.Fatalf("NewBoltStore: %v", err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+		eng := engine.New(s,
+			engine.WithRetryBackoff(time.Millisecond),
+			engine.WithDefaultMaxRetries(0),
+			engine.WithRecorder(rec),
+		)
+		return eng, s
+	}
+
+	t.Run("saga completed records saga COMPLETED and all steps SUCCEEDED", func(t *testing.T) {
+		t.Parallel()
+		rec := &fakeRecorder{}
+		eng, s := newEngineWithRecorder(t, rec)
+
+		fwd, _ := stepServer(t, http.StatusOK)
+		seedSaga(t, s, []saga.StepDefinition{
+			{Name: "step1", ForwardURL: fwd.URL, CompensateURL: fwd.URL},
+			{Name: "step2", ForwardURL: fwd.URL, CompensateURL: fwd.URL},
+		})
+
+		if _, err := eng.Start(context.Background(), "saga-1"); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+
+		rec.mu.Lock()
+		defer rec.mu.Unlock()
+
+		if len(rec.sagas) != 1 {
+			t.Fatalf("want 1 saga record, got %d", len(rec.sagas))
+		}
+		if rec.sagas[0].status != saga.SagaStatusCompleted {
+			t.Errorf("saga status: want COMPLETED, got %s", rec.sagas[0].status)
+		}
+		if rec.sagas[0].durationSec <= 0 {
+			t.Errorf("saga duration should be positive, got %f", rec.sagas[0].durationSec)
+		}
+
+		if len(rec.steps) != 2 {
+			t.Fatalf("want 2 step records, got %d", len(rec.steps))
+		}
+		for _, sr := range rec.steps {
+			if sr.status != saga.StepStatusSucceeded {
+				t.Errorf("step status: want SUCCEEDED, got %s", sr.status)
+			}
+		}
+	})
+
+	t.Run("step fails records step FAILED then saga FAILED", func(t *testing.T) {
+		t.Parallel()
+		rec := &fakeRecorder{}
+		eng, s := newEngineWithRecorder(t, rec)
+
+		ok, _ := stepServer(t, http.StatusOK)
+		fail, _ := stepServer(t, http.StatusInternalServerError)
+		seedSaga(t, s, []saga.StepDefinition{
+			{Name: "step1", ForwardURL: ok.URL, CompensateURL: ok.URL},
+			{Name: "step2", ForwardURL: fail.URL, CompensateURL: ok.URL},
+		})
+
+		if _, err := eng.Start(context.Background(), "saga-1"); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+
+		rec.mu.Lock()
+		defer rec.mu.Unlock()
+
+		if len(rec.sagas) != 1 {
+			t.Fatalf("want 1 saga record, got %d", len(rec.sagas))
+		}
+		if rec.sagas[0].status != saga.SagaStatusFailed {
+			t.Errorf("saga status: want FAILED, got %s", rec.sagas[0].status)
+		}
+
+		var stepFailed, stepSucceeded, stepCompensated int
+		for _, sr := range rec.steps {
+			switch sr.status {
+			case saga.StepStatusFailed:
+				stepFailed++
+			case saga.StepStatusSucceeded:
+				stepSucceeded++
+			case saga.StepStatusCompensated:
+				stepCompensated++
+			}
+		}
+		if stepFailed != 1 {
+			t.Errorf("want 1 FAILED step record, got %d", stepFailed)
+		}
+		if stepSucceeded != 1 {
+			t.Errorf("want 1 SUCCEEDED step record, got %d", stepSucceeded)
+		}
+		if stepCompensated != 1 {
+			t.Errorf("want 1 COMPENSATED step record, got %d", stepCompensated)
+		}
+	})
+
+	t.Run("saga aborted records saga ABORTED", func(t *testing.T) {
+		t.Parallel()
+		rec := &fakeRecorder{}
+		eng, s := newEngineWithRecorder(t, rec)
+
+		fwd, _ := stepServer(t, http.StatusOK)
+		seedSaga(t, s, []saga.StepDefinition{
+			{Name: "step1", ForwardURL: fwd.URL, CompensateURL: fwd.URL},
+		})
+
+		if _, err := eng.Abort(context.Background(), "saga-1"); err != nil {
+			t.Fatalf("Abort: %v", err)
+		}
+
+		rec.mu.Lock()
+		defer rec.mu.Unlock()
+
+		if len(rec.sagas) != 1 {
+			t.Fatalf("want 1 saga record, got %d", len(rec.sagas))
+		}
+		if rec.sagas[0].status != saga.SagaStatusAborted {
+			t.Errorf("saga status: want ABORTED, got %s", rec.sagas[0].status)
+		}
+	})
+}

@@ -53,6 +53,15 @@ func WithDefaultMaxRetries(n int) Option {
 	}
 }
 
+// WithRecorder attaches a Recorder that is called after each saga and step
+// terminal transition. Defaults to nil (no-op). Implementations must be safe
+// for concurrent use.
+func WithRecorder(r Recorder) Option {
+	return func(e *Engine) {
+		e.recorder = r
+	}
+}
+
 // WithLogger sets the logger used for engine-level events (e.g. best-effort
 // failure recording). Request-scoped logs use the logger embedded in the
 // context via zerolog.Ctx. Defaults to zerolog.Nop() so tests are silent.
@@ -72,6 +81,7 @@ type Engine struct {
 	defaultRetryBaseMs int
 	sagaTimeoutSecs    int
 	log                zerolog.Logger
+	recorder           Recorder
 
 	// Graceful-shutdown fields.
 	// draining is set by Drain() to prevent new Start() calls.
@@ -138,6 +148,30 @@ func New(s store.Store, opts ...Option) *Engine {
 		o(eng)
 	}
 	return eng
+}
+
+// recordSaga calls e.recorder.RecordSaga if a recorder is set.
+func (e *Engine) recordSaga(exec *saga.Execution) {
+	if e.recorder == nil {
+		return
+	}
+	var dur float64
+	if exec.StartedAt != nil && exec.CompletedAt != nil {
+		dur = exec.CompletedAt.Sub(*exec.StartedAt).Seconds()
+	}
+	e.recorder.RecordSaga(exec.Status, dur)
+}
+
+// recordStep calls e.recorder.RecordStep if a recorder is set.
+func (e *Engine) recordStep(step *saga.StepExecution) {
+	if e.recorder == nil {
+		return
+	}
+	var dur float64
+	if step.StartedAt != nil && step.CompletedAt != nil {
+		dur = step.CompletedAt.Sub(*step.StartedAt).Seconds()
+	}
+	e.recorder.RecordStep(step.Status, dur)
 }
 
 // sagaDurationMs returns the elapsed milliseconds between exec.StartedAt and
@@ -236,6 +270,7 @@ func (e *Engine) Abort(ctx context.Context, id string) (*saga.Execution, error) 
 		return nil, fmt.Errorf("persist ABORTED: %w", err)
 	}
 	zerolog.Ctx(ctx).Info().Str("saga_id", id).Str("status", string(saga.SagaStatusAborted)).Msg("saga aborted")
+	e.recordSaga(exec)
 	return exec, nil
 }
 
@@ -342,6 +377,7 @@ func (e *Engine) Resume(ctx context.Context, id string) (*saga.Execution, error)
 					e.markFailedBestEffort(exec, step.Name, uerr.Error())
 					return nil, fmt.Errorf("persist step FAILED: %w", uerr)
 				}
+				e.recordStep(step)
 				failedIdx = i
 				break
 			}
@@ -354,6 +390,7 @@ func (e *Engine) Resume(ctx context.Context, id string) (*saga.Execution, error)
 				e.markFailedBestEffort(exec, step.Name, err.Error())
 				return nil, fmt.Errorf("persist step SUCCEEDED: %w", err)
 			}
+			e.recordStep(step)
 		}
 
 		if failedIdx == -1 {
@@ -370,6 +407,7 @@ func (e *Engine) Resume(ctx context.Context, id string) (*saga.Execution, error)
 			}
 			log.Info().Str("status", string(saga.SagaStatusCompleted)).
 				Int64("duration_ms", sagaDurationMs(exec, *exec.CompletedAt)).Msg("saga completed")
+			e.recordSaga(exec)
 			return exec, nil
 		}
 	}
@@ -464,6 +502,8 @@ compensate:
 			}
 			log.Error().Str("step", step.Name).Str("status", string(saga.StepStatusCompensationFailed)).
 				Str("error", compErr.Error()).Msg("step compensation failed; saga dead-lettered")
+			e.recordStep(step)
+			e.recordSaga(exec)
 			return exec, fmt.Errorf("compensation halted: step %q exhausted retries: %s", step.Name, compErr)
 		}
 
@@ -490,6 +530,7 @@ compensate:
 	}
 	log.Info().Str("status", string(saga.SagaStatusFailed)).Str("failed_step", exec.FailedStep).
 		Int64("duration_ms", sagaDurationMs(exec, *exec.CompletedAt)).Msg("saga failed")
+	e.recordSaga(exec)
 
 	if sagaCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
 		return exec, fmt.Errorf("saga timed out after %ds: %w", timeoutSecs, context.DeadlineExceeded)
@@ -621,6 +662,7 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 			log.Error().Str("step", step.Name).Str("status", string(saga.StepStatusFailed)).
 				Int64("duration_ms", step.CompletedAt.Sub(*step.StartedAt).Milliseconds()).
 				Str("error", err.Error()).Msg("step failed")
+			e.recordStep(step)
 			failedIdx = i
 			break
 		}
@@ -635,6 +677,7 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 		}
 		log.Info().Str("step", step.Name).Str("status", string(saga.StepStatusSucceeded)).
 			Int64("duration_ms", step.CompletedAt.Sub(*step.StartedAt).Milliseconds()).Msg("step succeeded")
+		e.recordStep(step)
 	}
 
 	if failedIdx == -1 {
@@ -650,6 +693,7 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 		}
 		log.Info().Str("status", string(saga.SagaStatusCompleted)).
 			Int64("duration_ms", sagaDurationMs(exec, *exec.CompletedAt)).Msg("saga completed")
+		e.recordSaga(exec)
 		return exec, nil
 	}
 
@@ -719,6 +763,8 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 			log.Error().Str("step", step.Name).Str("status", string(saga.StepStatusCompensationFailed)).
 				Int64("duration_ms", t.Sub(compStartedAt).Milliseconds()).
 				Str("error", compErr.Error()).Msg("step compensation failed; saga dead-lettered")
+			e.recordStep(step)
+			e.recordSaga(exec)
 			return exec, fmt.Errorf("compensation halted: step %q exhausted retries: %s", step.Name, compErr)
 		}
 
@@ -733,6 +779,7 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 		}
 		log.Info().Str("step", step.Name).Str("status", string(saga.StepStatusCompensated)).
 			Int64("duration_ms", t.Sub(compStartedAt).Milliseconds()).Msg("step compensated")
+		e.recordStep(step)
 	}
 
 	failed := time.Now().UTC()
@@ -747,6 +794,7 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 	}
 	log.Info().Str("status", string(saga.SagaStatusFailed)).Str("failed_step", exec.FailedStep).
 		Int64("duration_ms", sagaDurationMs(exec, *exec.CompletedAt)).Msg("saga failed")
+	e.recordSaga(exec)
 
 	// If the saga's own deadline fired (not the caller's context), return a
 	// typed error so the gRPC server maps it to codes.DeadlineExceeded.

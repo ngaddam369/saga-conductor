@@ -167,6 +167,9 @@ func (s *Server) CreateSaga(ctx context.Context, req *pb.CreateSagaRequest) (*pb
 	}
 
 	if err := s.store.Create(ctx, exec); err != nil {
+		if errors.Is(err, store.ErrAlreadyExists) {
+			return nil, status.Errorf(codes.AlreadyExists, "create saga: %v", err)
+		}
 		return nil, status.Errorf(codes.Internal, "create saga: %v", err)
 	}
 

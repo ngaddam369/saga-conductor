@@ -228,6 +228,7 @@ func TestBoltStore(t *testing.T) {
 			{"compensating returns ErrAlreadyCompensating", saga.SagaStatusCompensating, store.ErrAlreadyCompensating},
 			{"completed returns ErrAlreadyCompleted", saga.SagaStatusCompleted, store.ErrAlreadyCompleted},
 			{"failed returns ErrAlreadyFailed", saga.SagaStatusFailed, store.ErrAlreadyFailed},
+			{"compensationFailed returns ErrAlreadyFailed", saga.SagaStatusCompensationFailed, store.ErrAlreadyFailed},
 		}
 		for _, tc := range tests {
 			t.Run(tc.name, func(t *testing.T) {

@@ -1403,6 +1403,17 @@ func TestEngineAbort(t *testing.T) {
 		}
 	})
 
+	t.Run("AlreadyCompensationFailed", func(t *testing.T) {
+		t.Parallel()
+		eng, s := newEngine(t)
+		seedSagaWithStatus(t, s, "abort-7", saga.SagaStatusCompensationFailed)
+
+		_, err := eng.Abort(context.Background(), "abort-7")
+		if !errors.Is(err, store.ErrAlreadyFailed) {
+			t.Errorf("Abort: got %v, want ErrAlreadyFailed", err)
+		}
+	})
+
 	t.Run("NotFound", func(t *testing.T) {
 		t.Parallel()
 		eng, s := newEngine(t)

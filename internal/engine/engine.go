@@ -275,7 +275,7 @@ func (e *Engine) Abort(ctx context.Context, id string) (*saga.Execution, error) 
 	switch exec.Status {
 	case saga.SagaStatusCompleted:
 		return nil, store.ErrAlreadyCompleted
-	case saga.SagaStatusFailed:
+	case saga.SagaStatusFailed, saga.SagaStatusCompensationFailed:
 		return nil, store.ErrAlreadyFailed
 	case saga.SagaStatusAborted:
 		return nil, store.ErrAlreadyAborted

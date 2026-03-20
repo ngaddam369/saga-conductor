@@ -49,6 +49,44 @@ func (m *mockEngine) Abort(_ context.Context, _ string) (*saga.Execution, error)
 	return nil, m.abortErr
 }
 
+// stubCreateStore is a store.Store that returns a fixed error from Create and
+// panics for any other method. Used to test error-code mapping in CreateSaga.
+type stubCreateStore struct {
+	createErr error
+}
+
+func (s *stubCreateStore) Create(_ context.Context, _ *saga.Execution) error { return s.createErr }
+func (s *stubCreateStore) Get(_ context.Context, _ string) (*saga.Execution, error) {
+	panic("unexpected Get")
+}
+func (s *stubCreateStore) Update(_ context.Context, _ *saga.Execution) error {
+	panic("unexpected Update")
+}
+func (s *stubCreateStore) List(_ context.Context, _ saga.SagaStatus, _ int, _ string) ([]*saga.Execution, string, error) {
+	panic("unexpected List")
+}
+func (s *stubCreateStore) TransitionToRunning(_ context.Context, _ string, _ time.Time) (*saga.Execution, error) {
+	panic("unexpected TransitionToRunning")
+}
+func (s *stubCreateStore) GetOrCreateWithKey(_ context.Context, _ string, _ time.Time, _ *saga.Execution) (*saga.Execution, error) {
+	panic("unexpected GetOrCreateWithKey")
+}
+func (s *stubCreateStore) Delete(_ context.Context, _ string) error { panic("unexpected Delete") }
+func (s *stubCreateStore) Ping(_ context.Context) error             { panic("unexpected Ping") }
+
+func TestCreateSagaStoreErrorMapping(t *testing.T) {
+	t.Parallel()
+	srv := server.New(&stubCreateStore{createErr: store.ErrAlreadyExists}, &mockEngine{}, 24*time.Hour)
+
+	_, err := srv.CreateSaga(context.Background(), &pb.CreateSagaRequest{
+		Name:  "order-saga",
+		Steps: validSteps(),
+	})
+	if got := status.Code(err); got != codes.AlreadyExists {
+		t.Errorf("CreateSaga with ErrAlreadyExists: got code %v, want AlreadyExists", got)
+	}
+}
+
 func newTestServer(t *testing.T, eng server.Engine) (pb.SagaOrchestratorClient, *store.BoltStore) {
 	t.Helper()
 

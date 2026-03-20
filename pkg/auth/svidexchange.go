@@ -3,6 +3,8 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"sync"
 
 	"github.com/ngaddam369/svid-exchange/pkg/client"
@@ -26,7 +28,9 @@ type SVIDTokenClientFactory func(ctx context.Context, addr, socketPath, spiffeID
 type SVIDExchangeOption func(*SVIDExchangeTokenSource)
 
 // WithNewTokenClient injects a custom SVIDTokenClientFactory, bypassing the
-// real svid-exchange gRPC client. Intended for tests.
+// real svid-exchange gRPC client. Intended for tests; required to be exported
+// because test packages in other directories (e.g. cmd/server) also inject
+// mocks via this option.
 func WithNewTokenClient(fn SVIDTokenClientFactory) SVIDExchangeOption {
 	return func(s *SVIDExchangeTokenSource) { s.newClient = fn }
 }
@@ -47,7 +51,7 @@ type SVIDExchangeTokenSource struct {
 	socketPath string
 	newClient  SVIDTokenClientFactory
 
-	mu      sync.Mutex
+	mu      sync.RWMutex
 	clients map[string]SVIDTokenClient
 }
 
@@ -110,19 +114,35 @@ func (s *SVIDExchangeTokenSource) Close() error {
 	return errors.Join(errs...)
 }
 
-// getOrCreate returns the cached client for spiffeID or creates a new one.
+// getOrCreate returns the cached client for spiffeID, creating one if needed.
+// It uses a read lock for the common (cached) path so concurrent calls for
+// different SPIFFE IDs do not serialise behind a single gRPC dial.
 func (s *SVIDExchangeTokenSource) getOrCreate(ctx context.Context, spiffeID string) (SVIDTokenClient, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if c, ok := s.clients[spiffeID]; ok {
+	// Fast path: client already cached.
+	s.mu.RLock()
+	c, ok := s.clients[spiffeID]
+	s.mu.RUnlock()
+	if ok {
 		return c, nil
 	}
-	c, err := s.newClient(ctx, s.addr, s.socketPath, spiffeID)
+
+	// Slow path: create the client outside any lock.
+	newC, err := s.newClient(ctx, s.addr, s.socketPath, spiffeID)
 	if err != nil {
 		return nil, err
 	}
-	s.clients[spiffeID] = c
-	return c, nil
+
+	// Re-check under the write lock in case another goroutine raced us.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if existing, ok := s.clients[spiffeID]; ok {
+		if err := newC.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "svid-exchange: close duplicate client for %q: %v\n", spiffeID, err)
+		}
+		return existing, nil
+	}
+	s.clients[spiffeID] = newC
+	return newC, nil
 }
 
 // defaultNewTokenClient is the production factory: wraps client.New from the

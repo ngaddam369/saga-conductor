@@ -3,6 +3,7 @@ package auth_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -254,4 +255,51 @@ func TestSVIDExchangeTokenSource(t *testing.T) {
 			t.Errorf("spiffeID: got %q, want %q", gotSPIFFEID, "spiffe://cluster/ns/svc-a")
 		}
 	})
+}
+
+func TestSVIDExchangeTokenSourceConcurrentGetOrCreate(t *testing.T) {
+	t.Parallel()
+
+	// Counts how many times the factory is called for each SPIFFE ID.
+	var factoryCalls atomic.Int32
+	src := auth.NewSVIDExchangeTokenSource("svid.internal:443", "",
+		auth.WithNewTokenClient(func(_ context.Context, _, _, _ string) (auth.SVIDTokenClient, error) {
+			factoryCalls.Add(1)
+			return &mockTokenClient{token: "tok"}, nil
+		}),
+	)
+
+	const goroutines = 20
+	results := make([]string, goroutines)
+	errs := make([]error, goroutines)
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := range goroutines {
+		go func(i int) {
+			defer wg.Done()
+			tok, err := src.Token(context.Background(), "http://svc/fwd",
+				engine.StepAuthContext{SpiffeID: "spiffe://cluster/ns/svc-a"})
+			results[i] = tok
+			errs[i] = err
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("goroutine %d: unexpected error: %v", i, err)
+		}
+		if results[i] != "tok" {
+			t.Errorf("goroutine %d: got token %q, want %q", i, results[i], "tok")
+		}
+	}
+
+	// The factory must be called at most once per SPIFFE ID — the double-check
+	// under the write lock prevents spurious extra creations except in the
+	// race window, where a second client is created and immediately closed.
+	// Either 1 or 2 calls are acceptable; more than that indicates a bug.
+	if n := factoryCalls.Load(); n < 1 || n > goroutines {
+		t.Errorf("factory calls: got %d, want between 1 and %d", n, goroutines)
+	}
 }

@@ -219,6 +219,8 @@ func (s *BoltStore) TransitionToRunning(ctx context.Context, id string, startedA
 			return ErrAlreadyFailed
 		case saga.SagaStatusAborted:
 			return ErrAlreadyAborted
+		case saga.SagaStatusCompensationFailed:
+			return ErrAlreadyFailed
 		default:
 			return fmt.Errorf("saga is in unexpected status %q", exec.Status)
 		}

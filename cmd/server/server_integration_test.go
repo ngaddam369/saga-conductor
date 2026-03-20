@@ -36,6 +36,7 @@ import (
 
 	"github.com/ngaddam369/saga-conductor/internal/dashboard"
 	"github.com/ngaddam369/saga-conductor/internal/engine"
+	sagaclient "github.com/ngaddam369/saga-conductor/pkg/client"
 	"github.com/ngaddam369/saga-conductor/internal/saga"
 	"github.com/ngaddam369/saga-conductor/internal/server"
 	"github.com/ngaddam369/saga-conductor/internal/store"
@@ -49,6 +50,31 @@ func productionGRPCServer(t *testing.T, cfg config) pb.SagaOrchestratorClient {
 	t.Helper()
 	client, _ := productionGRPCServerWithEngine(t, cfg)
 	return client
+}
+
+// productionGRPCAddr is like productionGRPCServer but returns the raw listener
+// address (host:port) instead of a pre-dialled proto client. Tests that want
+// to exercise their own dialling logic (e.g. pkg/client) use this helper.
+func productionGRPCAddr(t *testing.T, cfg config) string {
+	t.Helper()
+	s, err := store.NewBoltStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewBoltStore: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	eng := engine.New(s)
+	grpcSrv := grpc.NewServer(
+		grpc.MaxRecvMsgSize(cfg.grpcMaxRecvMB*1024*1024),
+		grpc.MaxSendMsgSize(cfg.grpcMaxSendMB*1024*1024),
+	)
+	pb.RegisterSagaOrchestratorServer(grpcSrv, server.New(s, eng, 24*time.Hour))
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = grpcSrv.Serve(lis) }()
+	t.Cleanup(grpcSrv.GracefulStop)
+	return lis.Addr().String()
 }
 
 // productionGRPCServerWithEngine is like productionGRPCServer but also returns
@@ -1811,5 +1837,87 @@ func TestDashboardSSEReceivesEngineUpdate(t *testing.T) {
 		case <-timeout:
 			t.Fatalf("timed out waiting for SSE event containing %q", sagaID)
 		}
+	}
+}
+
+func TestClientEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	addr := productionGRPCAddr(t, defaultTestConfig())
+
+	// Step server — always succeeds.
+	fwd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(fwd.Close)
+
+	c, err := sagaclient.New(addr, sagaclient.WithInsecure())
+	if err != nil {
+		t.Fatalf("client.New: %v", err)
+	}
+	defer func() {
+		if err := c.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}()
+
+	ctx := context.Background()
+
+	// CreateSaga → StartSaga → verify COMPLETED.
+	created, err := c.CreateSaga(ctx, &pb.CreateSagaRequest{
+		Name: "e2e-saga",
+		Steps: []*pb.StepDefinition{
+			{Name: "step1", ForwardUrl: fwd.URL, CompensateUrl: fwd.URL},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSaga: %v", err)
+	}
+	if created.Status != pb.SagaStatus_SAGA_STATUS_PENDING {
+		t.Errorf("after create: want PENDING, got %v", created.Status)
+	}
+
+	completed, err := c.StartSaga(ctx, created.Id)
+	if err != nil {
+		t.Fatalf("StartSaga: %v", err)
+	}
+	if completed.Status != pb.SagaStatus_SAGA_STATUS_COMPLETED {
+		t.Errorf("after start: want COMPLETED, got %v", completed.Status)
+	}
+
+	// GetSaga — verify the terminal state is persisted.
+	fetched, err := c.GetSaga(ctx, created.Id)
+	if err != nil {
+		t.Fatalf("GetSaga: %v", err)
+	}
+	if fetched.Status != pb.SagaStatus_SAGA_STATUS_COMPLETED {
+		t.Errorf("GetSaga: want COMPLETED, got %v", fetched.Status)
+	}
+
+	// Create a second saga and abort it before starting.
+	pending, err := c.CreateSaga(ctx, &pb.CreateSagaRequest{
+		Name: "e2e-abort",
+		Steps: []*pb.StepDefinition{
+			{Name: "step1", ForwardUrl: fwd.URL, CompensateUrl: fwd.URL},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateSaga (abort): %v", err)
+	}
+	aborted, err := c.AbortSaga(ctx, pending.Id)
+	if err != nil {
+		t.Fatalf("AbortSaga: %v", err)
+	}
+	if aborted.Status != pb.SagaStatus_SAGA_STATUS_ABORTED {
+		t.Errorf("AbortSaga: want ABORTED, got %v", aborted.Status)
+	}
+
+	// ListSagas — both sagas must appear.
+	sagas, _, err := c.ListSagas(ctx, &pb.ListSagasRequest{PageSize: 10})
+	if err != nil {
+		t.Fatalf("ListSagas: %v", err)
+	}
+	if len(sagas) < 2 {
+		t.Errorf("ListSagas: want ≥2 sagas, got %d", len(sagas))
 	}
 }

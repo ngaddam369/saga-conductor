@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+
+	"github.com/ngaddam369/saga-conductor/internal/engine"
 )
 
 // StaticTokenSource is a TokenSource that returns the same pre-configured
@@ -17,7 +19,7 @@ func NewStaticTokenSource(token string) StaticTokenSource {
 	return StaticTokenSource{token: token}
 }
 
-func (s StaticTokenSource) Token(_ context.Context, _ string, _ string) (string, error) {
+func (s StaticTokenSource) Token(_ context.Context, _ string, _ engine.StepAuthContext) (string, error) {
 	return s.token, nil
 }
 

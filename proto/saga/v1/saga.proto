@@ -56,6 +56,13 @@ message StepDefinition {
   // scoped JWT from the svid-exchange service and attaches it as Authorization:
   // Bearer on the outbound HTTP call for this step.
   string target_spiffe_id = 7;
+  // auth_type selects the authentication mechanism for this step, overriding
+  // the server-wide AUTH_TYPE. Must be one of: none, static, jwt, oidc,
+  // svid-exchange. Empty means use the global default.
+  string auth_type = 8;
+  // auth_config carries additional per-step auth parameters keyed by the
+  // selected auth_type implementation. Ignored when auth_type is empty.
+  map<string,string> auth_config = 9;
 }
 
 message StepExecution {

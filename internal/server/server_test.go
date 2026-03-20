@@ -422,6 +422,34 @@ func TestServer(t *testing.T) {
 				}},
 				wantCode: codes.OK,
 			},
+			{
+				name: "unknown auth_type rejected",
+				req: &pb.CreateSagaRequest{Name: "saga", Steps: []*pb.StepDefinition{
+					{Name: "step-1", ForwardUrl: "http://x.com/f", CompensateUrl: "http://x.com/c", AuthType: "kerberos"},
+				}},
+				wantCode: codes.InvalidArgument,
+			},
+			{
+				name: "valid auth_type static accepted",
+				req: &pb.CreateSagaRequest{Name: "saga", Steps: []*pb.StepDefinition{
+					{Name: "step-1", ForwardUrl: "http://x.com/f", CompensateUrl: "http://x.com/c", AuthType: "static"},
+				}},
+				wantCode: codes.OK,
+			},
+			{
+				name: "valid auth_type svid-exchange accepted",
+				req: &pb.CreateSagaRequest{Name: "saga", Steps: []*pb.StepDefinition{
+					{Name: "step-1", ForwardUrl: "http://x.com/f", CompensateUrl: "http://x.com/c", AuthType: "svid-exchange"},
+				}},
+				wantCode: codes.OK,
+			},
+			{
+				name: "empty auth_type accepted (uses global default)",
+				req: &pb.CreateSagaRequest{Name: "saga", Steps: []*pb.StepDefinition{
+					{Name: "step-1", ForwardUrl: "http://x.com/f", CompensateUrl: "http://x.com/c"},
+				}},
+				wantCode: codes.OK,
+			},
 		}
 
 		for _, tc := range tests {

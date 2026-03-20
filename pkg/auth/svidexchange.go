@@ -6,6 +6,8 @@ import (
 	"sync"
 
 	"github.com/ngaddam369/svid-exchange/pkg/client"
+
+	"github.com/ngaddam369/saga-conductor/internal/engine"
 )
 
 // SVIDTokenClient abstracts the svid-exchange per-service client.
@@ -76,12 +78,12 @@ func NewSVIDExchangeTokenSource(addr, socketPath string, opts ...SVIDExchangeOpt
 // dev). Also returns an empty string — rather than an error — when client
 // creation fails (socket unreachable, server unavailable), so a missing SPIRE
 // agent does not abort in-flight sagas.
-func (s *SVIDExchangeTokenSource) Token(ctx context.Context, _ string, spiffeID string) (string, error) {
-	if spiffeID == "" || s.addr == "" {
+func (s *SVIDExchangeTokenSource) Token(ctx context.Context, _ string, auth engine.StepAuthContext) (string, error) {
+	if auth.SpiffeID == "" || s.addr == "" {
 		return "", nil
 	}
 
-	c, err := s.getOrCreate(ctx, spiffeID)
+	c, err := s.getOrCreate(ctx, auth.SpiffeID)
 	if err != nil {
 		// Client creation failure is treated as unavailable: return empty
 		// token rather than aborting the saga.

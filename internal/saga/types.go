@@ -59,6 +59,13 @@ type StepDefinition struct {
 	// scoped JWT from the svid-exchange service and attaches it as the
 	// Authorization: Bearer header on the outbound HTTP call.
 	TargetSPIFFEID string `json:"target_spiffe_id,omitempty"`
+	// AuthType selects the per-step authentication mechanism, overriding the
+	// server-wide AUTH_TYPE. Must be a registered type (none, static, jwt,
+	// oidc, svid-exchange). Empty means use the global default.
+	AuthType string `json:"auth_type,omitempty"`
+	// AuthConfig carries additional per-step auth parameters consumed by the
+	// selected AuthType implementation.
+	AuthConfig map[string]string `json:"auth_config,omitempty"`
 }
 
 // StepError holds structured context for a failed step HTTP call.

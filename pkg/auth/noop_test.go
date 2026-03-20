@@ -4,13 +4,14 @@ import (
 	"context"
 	"testing"
 
+	"github.com/ngaddam369/saga-conductor/internal/engine"
 	"github.com/ngaddam369/saga-conductor/pkg/auth"
 )
 
 func TestNoopTokenSource(t *testing.T) {
 	t.Parallel()
 	var ts auth.NoopTokenSource
-	tok, err := ts.Token(context.Background(), "http://example.com/step", "")
+	tok, err := ts.Token(context.Background(), "http://example.com/step", engine.StepAuthContext{})
 	if err != nil {
 		t.Fatalf("Token: unexpected error: %v", err)
 	}

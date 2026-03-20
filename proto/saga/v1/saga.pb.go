@@ -175,8 +175,15 @@ type StepDefinition struct {
 	// scoped JWT from the svid-exchange service and attaches it as Authorization:
 	// Bearer on the outbound HTTP call for this step.
 	TargetSpiffeId string `protobuf:"bytes,7,opt,name=target_spiffe_id,json=targetSpiffeId,proto3" json:"target_spiffe_id,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// auth_type selects the authentication mechanism for this step, overriding
+	// the server-wide AUTH_TYPE. Must be one of: none, static, jwt, oidc,
+	// svid-exchange. Empty means use the global default.
+	AuthType string `protobuf:"bytes,8,opt,name=auth_type,json=authType,proto3" json:"auth_type,omitempty"`
+	// auth_config carries additional per-step auth parameters keyed by the
+	// selected auth_type implementation. Ignored when auth_type is empty.
+	AuthConfig    map[string]string `protobuf:"bytes,9,rep,name=auth_config,json=authConfig,proto3" json:"auth_config,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StepDefinition) Reset() {
@@ -256,6 +263,20 @@ func (x *StepDefinition) GetTargetSpiffeId() string {
 		return x.TargetSpiffeId
 	}
 	return ""
+}
+
+func (x *StepDefinition) GetAuthType() string {
+	if x != nil {
+		return x.AuthType
+	}
+	return ""
+}
+
+func (x *StepDefinition) GetAuthConfig() map[string]string {
+	if x != nil {
+		return x.AuthConfig
+	}
+	return nil
 }
 
 type StepExecution struct {
@@ -978,7 +999,7 @@ var File_proto_saga_v1_saga_proto protoreflect.FileDescriptor
 
 const file_proto_saga_v1_saga_proto_rawDesc = "" +
 	"\n" +
-	"\x18proto/saga/v1/saga.proto\x12\asaga.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x8a\x02\n" +
+	"\x18proto/saga/v1/saga.proto\x12\asaga.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xb0\x03\n" +
 	"\x0eStepDefinition\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1f\n" +
 	"\vforward_url\x18\x02 \x01(\tR\n" +
@@ -988,7 +1009,13 @@ const file_proto_saga_v1_saga_proto_rawDesc = "" +
 	"\vmax_retries\x18\x05 \x01(\x05R\n" +
 	"maxRetries\x12(\n" +
 	"\x10retry_backoff_ms\x18\x06 \x01(\x05R\x0eretryBackoffMs\x12(\n" +
-	"\x10target_spiffe_id\x18\a \x01(\tR\x0etargetSpiffeId\"\x83\x02\n" +
+	"\x10target_spiffe_id\x18\a \x01(\tR\x0etargetSpiffeId\x12\x1b\n" +
+	"\tauth_type\x18\b \x01(\tR\bauthType\x12H\n" +
+	"\vauth_config\x18\t \x03(\v2'.saga.v1.StepDefinition.AuthConfigEntryR\n" +
+	"authConfig\x1a=\n" +
+	"\x0fAuthConfigEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x83\x02\n" +
 	"\rStepExecution\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12+\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x13.saga.v1.StepStatusR\x06status\x12\x14\n" +
@@ -1081,7 +1108,7 @@ func file_proto_saga_v1_saga_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_saga_v1_saga_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_proto_saga_v1_saga_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_proto_saga_v1_saga_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_proto_saga_v1_saga_proto_goTypes = []any{
 	(SagaStatus)(0),               // 0: saga.v1.SagaStatus
 	(StepStatus)(0),               // 1: saga.v1.StepStatus
@@ -1098,39 +1125,41 @@ var file_proto_saga_v1_saga_proto_goTypes = []any{
 	(*ListSagasResponse)(nil),     // 12: saga.v1.ListSagasResponse
 	(*AbortSagaRequest)(nil),      // 13: saga.v1.AbortSagaRequest
 	(*AbortSagaResponse)(nil),     // 14: saga.v1.AbortSagaResponse
-	(*timestamppb.Timestamp)(nil), // 15: google.protobuf.Timestamp
+	nil,                           // 15: saga.v1.StepDefinition.AuthConfigEntry
+	(*timestamppb.Timestamp)(nil), // 16: google.protobuf.Timestamp
 }
 var file_proto_saga_v1_saga_proto_depIdxs = []int32{
-	1,  // 0: saga.v1.StepExecution.status:type_name -> saga.v1.StepStatus
-	15, // 1: saga.v1.StepExecution.started_at:type_name -> google.protobuf.Timestamp
-	15, // 2: saga.v1.StepExecution.completed_at:type_name -> google.protobuf.Timestamp
-	0,  // 3: saga.v1.SagaExecution.status:type_name -> saga.v1.SagaStatus
-	3,  // 4: saga.v1.SagaExecution.steps:type_name -> saga.v1.StepExecution
-	15, // 5: saga.v1.SagaExecution.created_at:type_name -> google.protobuf.Timestamp
-	15, // 6: saga.v1.SagaExecution.started_at:type_name -> google.protobuf.Timestamp
-	15, // 7: saga.v1.SagaExecution.completed_at:type_name -> google.protobuf.Timestamp
-	2,  // 8: saga.v1.CreateSagaRequest.steps:type_name -> saga.v1.StepDefinition
-	4,  // 9: saga.v1.CreateSagaResponse.saga:type_name -> saga.v1.SagaExecution
-	4,  // 10: saga.v1.StartSagaResponse.saga:type_name -> saga.v1.SagaExecution
-	4,  // 11: saga.v1.GetSagaResponse.saga:type_name -> saga.v1.SagaExecution
-	0,  // 12: saga.v1.ListSagasRequest.status:type_name -> saga.v1.SagaStatus
-	4,  // 13: saga.v1.ListSagasResponse.sagas:type_name -> saga.v1.SagaExecution
-	4,  // 14: saga.v1.AbortSagaResponse.saga:type_name -> saga.v1.SagaExecution
-	5,  // 15: saga.v1.SagaOrchestrator.CreateSaga:input_type -> saga.v1.CreateSagaRequest
-	7,  // 16: saga.v1.SagaOrchestrator.StartSaga:input_type -> saga.v1.StartSagaRequest
-	9,  // 17: saga.v1.SagaOrchestrator.GetSaga:input_type -> saga.v1.GetSagaRequest
-	11, // 18: saga.v1.SagaOrchestrator.ListSagas:input_type -> saga.v1.ListSagasRequest
-	13, // 19: saga.v1.SagaOrchestrator.AbortSaga:input_type -> saga.v1.AbortSagaRequest
-	6,  // 20: saga.v1.SagaOrchestrator.CreateSaga:output_type -> saga.v1.CreateSagaResponse
-	8,  // 21: saga.v1.SagaOrchestrator.StartSaga:output_type -> saga.v1.StartSagaResponse
-	10, // 22: saga.v1.SagaOrchestrator.GetSaga:output_type -> saga.v1.GetSagaResponse
-	12, // 23: saga.v1.SagaOrchestrator.ListSagas:output_type -> saga.v1.ListSagasResponse
-	14, // 24: saga.v1.SagaOrchestrator.AbortSaga:output_type -> saga.v1.AbortSagaResponse
-	20, // [20:25] is the sub-list for method output_type
-	15, // [15:20] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	15, // 0: saga.v1.StepDefinition.auth_config:type_name -> saga.v1.StepDefinition.AuthConfigEntry
+	1,  // 1: saga.v1.StepExecution.status:type_name -> saga.v1.StepStatus
+	16, // 2: saga.v1.StepExecution.started_at:type_name -> google.protobuf.Timestamp
+	16, // 3: saga.v1.StepExecution.completed_at:type_name -> google.protobuf.Timestamp
+	0,  // 4: saga.v1.SagaExecution.status:type_name -> saga.v1.SagaStatus
+	3,  // 5: saga.v1.SagaExecution.steps:type_name -> saga.v1.StepExecution
+	16, // 6: saga.v1.SagaExecution.created_at:type_name -> google.protobuf.Timestamp
+	16, // 7: saga.v1.SagaExecution.started_at:type_name -> google.protobuf.Timestamp
+	16, // 8: saga.v1.SagaExecution.completed_at:type_name -> google.protobuf.Timestamp
+	2,  // 9: saga.v1.CreateSagaRequest.steps:type_name -> saga.v1.StepDefinition
+	4,  // 10: saga.v1.CreateSagaResponse.saga:type_name -> saga.v1.SagaExecution
+	4,  // 11: saga.v1.StartSagaResponse.saga:type_name -> saga.v1.SagaExecution
+	4,  // 12: saga.v1.GetSagaResponse.saga:type_name -> saga.v1.SagaExecution
+	0,  // 13: saga.v1.ListSagasRequest.status:type_name -> saga.v1.SagaStatus
+	4,  // 14: saga.v1.ListSagasResponse.sagas:type_name -> saga.v1.SagaExecution
+	4,  // 15: saga.v1.AbortSagaResponse.saga:type_name -> saga.v1.SagaExecution
+	5,  // 16: saga.v1.SagaOrchestrator.CreateSaga:input_type -> saga.v1.CreateSagaRequest
+	7,  // 17: saga.v1.SagaOrchestrator.StartSaga:input_type -> saga.v1.StartSagaRequest
+	9,  // 18: saga.v1.SagaOrchestrator.GetSaga:input_type -> saga.v1.GetSagaRequest
+	11, // 19: saga.v1.SagaOrchestrator.ListSagas:input_type -> saga.v1.ListSagasRequest
+	13, // 20: saga.v1.SagaOrchestrator.AbortSaga:input_type -> saga.v1.AbortSagaRequest
+	6,  // 21: saga.v1.SagaOrchestrator.CreateSaga:output_type -> saga.v1.CreateSagaResponse
+	8,  // 22: saga.v1.SagaOrchestrator.StartSaga:output_type -> saga.v1.StartSagaResponse
+	10, // 23: saga.v1.SagaOrchestrator.GetSaga:output_type -> saga.v1.GetSagaResponse
+	12, // 24: saga.v1.SagaOrchestrator.ListSagas:output_type -> saga.v1.ListSagasResponse
+	14, // 25: saga.v1.SagaOrchestrator.AbortSaga:output_type -> saga.v1.AbortSagaResponse
+	21, // [21:26] is the sub-list for method output_type
+	16, // [16:21] is the sub-list for method input_type
+	16, // [16:16] is the sub-list for extension type_name
+	16, // [16:16] is the sub-list for extension extendee
+	0,  // [0:16] is the sub-list for field type_name
 }
 
 func init() { file_proto_saga_v1_saga_proto_init() }
@@ -1144,7 +1173,7 @@ func file_proto_saga_v1_saga_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_saga_v1_saga_proto_rawDesc), len(file_proto_saga_v1_saga_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   13,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

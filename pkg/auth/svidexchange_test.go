@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/ngaddam369/saga-conductor/internal/engine"
 	"github.com/ngaddam369/saga-conductor/pkg/auth"
 )
 
@@ -58,7 +59,7 @@ func TestSVIDExchangeTokenSource(t *testing.T) {
 			}),
 		)
 
-		tok, err := src.Token(context.Background(), "http://svc/fwd", "")
+		tok, err := src.Token(context.Background(), "http://svc/fwd", engine.StepAuthContext{})
 		if err != nil {
 			t.Fatalf("Token: unexpected error: %v", err)
 		}
@@ -80,7 +81,7 @@ func TestSVIDExchangeTokenSource(t *testing.T) {
 			}),
 		)
 
-		tok, err := src.Token(context.Background(), "http://svc/fwd", "spiffe://cluster/ns/svc-a")
+		tok, err := src.Token(context.Background(), "http://svc/fwd", engine.StepAuthContext{SpiffeID: "spiffe://cluster/ns/svc-a"})
 		if err != nil {
 			t.Fatalf("Token: unexpected error: %v", err)
 		}
@@ -97,7 +98,7 @@ func TestSVIDExchangeTokenSource(t *testing.T) {
 		mock := &mockTokenClient{token: "svid-jwt"}
 		src := auth.NewSVIDExchangeTokenSource("svid.internal:443", "", newMockFactory(mock))
 
-		tok, err := src.Token(context.Background(), "http://svc/fwd", "spiffe://cluster/ns/svc-a")
+		tok, err := src.Token(context.Background(), "http://svc/fwd", engine.StepAuthContext{SpiffeID: "spiffe://cluster/ns/svc-a"})
 		if err != nil {
 			t.Fatalf("Token: unexpected error: %v", err)
 		}
@@ -119,7 +120,7 @@ func TestSVIDExchangeTokenSource(t *testing.T) {
 
 		const spiffeID = "spiffe://cluster/ns/svc-a"
 		for i := range 5 {
-			tok, err := src.Token(context.Background(), "http://svc/fwd", spiffeID)
+			tok, err := src.Token(context.Background(), "http://svc/fwd", engine.StepAuthContext{SpiffeID: spiffeID})
 			if err != nil {
 				t.Fatalf("call %d: Token: %v", i+1, err)
 			}
@@ -145,11 +146,11 @@ func TestSVIDExchangeTokenSource(t *testing.T) {
 			}),
 		)
 
-		tok1, err := src.Token(context.Background(), "http://svc-a/fwd", "spiffe://cluster/ns/svc-a")
+		tok1, err := src.Token(context.Background(), "http://svc-a/fwd", engine.StepAuthContext{SpiffeID: "spiffe://cluster/ns/svc-a"})
 		if err != nil {
 			t.Fatalf("Token svc-a: %v", err)
 		}
-		tok2, err := src.Token(context.Background(), "http://svc-b/fwd", "spiffe://cluster/ns/svc-b")
+		tok2, err := src.Token(context.Background(), "http://svc-b/fwd", engine.StepAuthContext{SpiffeID: "spiffe://cluster/ns/svc-b"})
 		if err != nil {
 			t.Fatalf("Token svc-b: %v", err)
 		}
@@ -170,7 +171,7 @@ func TestSVIDExchangeTokenSource(t *testing.T) {
 			}),
 		)
 
-		tok, err := src.Token(context.Background(), "http://svc/fwd", "spiffe://cluster/ns/svc-a")
+		tok, err := src.Token(context.Background(), "http://svc/fwd", engine.StepAuthContext{SpiffeID: "spiffe://cluster/ns/svc-a"})
 		if err != nil {
 			t.Fatalf("Token: unexpected error (should be graceful no-op): %v", err)
 		}
@@ -184,7 +185,7 @@ func TestSVIDExchangeTokenSource(t *testing.T) {
 		mock := &mockTokenClient{err: errors.New("token exchange failed")}
 		src := auth.NewSVIDExchangeTokenSource("svid.internal:443", "", newMockFactory(mock))
 
-		if _, err := src.Token(context.Background(), "http://svc/fwd", "spiffe://cluster/ns/svc-a"); err == nil {
+		if _, err := src.Token(context.Background(), "http://svc/fwd", engine.StepAuthContext{SpiffeID: "spiffe://cluster/ns/svc-a"}); err == nil {
 			t.Error("Token: expected error from token client, got nil")
 		}
 	})
@@ -212,7 +213,7 @@ func TestSVIDExchangeTokenSource(t *testing.T) {
 
 		// Warm up the pool.
 		for id := range idToClient {
-			if _, err := src.Token(context.Background(), "http://svc/fwd", id); err != nil {
+			if _, err := src.Token(context.Background(), "http://svc/fwd", engine.StepAuthContext{SpiffeID: id}); err != nil {
 				t.Fatalf("Token(%q): %v", id, err)
 			}
 		}
@@ -240,7 +241,7 @@ func TestSVIDExchangeTokenSource(t *testing.T) {
 			}),
 		)
 
-		if _, err := src.Token(context.Background(), "http://svc/fwd", "spiffe://cluster/ns/svc-a"); err != nil {
+		if _, err := src.Token(context.Background(), "http://svc/fwd", engine.StepAuthContext{SpiffeID: "spiffe://cluster/ns/svc-a"}); err != nil {
 			t.Fatalf("Token: %v", err)
 		}
 		if gotAddr != "svid.prod:443" {

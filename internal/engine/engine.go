@@ -853,13 +853,19 @@ func (e *Engine) callHTTPWithRetry(ctx context.Context, url string, payload []by
 		baseMs = def.RetryBackoffMs
 	}
 
+	stepAuth := StepAuthContext{
+		SpiffeID:   def.TargetSPIFFEID,
+		AuthType:   def.AuthType,
+		AuthConfig: def.AuthConfig,
+	}
+
 	var (
 		err        error
 		lastDetail *saga.StepError
 	)
 	for attempt := range maxRetries + 1 {
 		var detail *saga.StepError
-		detail, err = e.callHTTP(ctx, url, payload, def.TimeoutSeconds, def.TargetSPIFFEID)
+		detail, err = e.callHTTP(ctx, url, payload, def.TimeoutSeconds, stepAuth)
 		lastDetail = detail
 		if err == nil {
 			return nil, nil
@@ -881,7 +887,7 @@ func (e *Engine) callHTTPWithRetry(ctx context.Context, url string, payload []by
 
 // callHTTP POSTs payload to url, returning a structured StepError and a plain
 // error for non-2xx responses or transport failures. On success both are nil.
-func (e *Engine) callHTTP(ctx context.Context, url string, payload []byte, timeoutSeconds int, spiffeID string) (*saga.StepError, error) {
+func (e *Engine) callHTTP(ctx context.Context, url string, payload []byte, timeoutSeconds int, auth StepAuthContext) (*saga.StepError, error) {
 	timeout := e.defaultTimeout
 	if timeoutSeconds > 0 {
 		timeout = time.Duration(timeoutSeconds) * time.Second
@@ -896,7 +902,7 @@ func (e *Engine) callHTTP(ctx context.Context, url string, payload []byte, timeo
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if e.tokenSource != nil {
-		tok, tokErr := e.tokenSource.Token(ctx, url, spiffeID)
+		tok, tokErr := e.tokenSource.Token(ctx, url, auth)
 		if tokErr != nil {
 			return nil, fmt.Errorf("token source: %w", tokErr)
 		}

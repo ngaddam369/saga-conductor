@@ -80,7 +80,8 @@ func run(log zerolog.Logger) error {
 		return err
 	}
 
-	eng := engine.New(s, engine.WithLogger(log), engine.WithRecorder(rec), engine.WithTokenSource(tokenSrc))
+	routingSrc := buildRoutingSource(tokenSrc)
+	eng := engine.New(s, engine.WithLogger(log), engine.WithRecorder(rec), engine.WithTokenSource(routingSrc))
 
 	// Resume any sagas left in RUNNING or COMPENSATING state by a previous crash.
 	resumeCtx := log.WithContext(context.Background())
@@ -289,4 +290,42 @@ func buildAuthProviders(authType string) (engine.TokenSource, server.TokenValida
 	default:
 		return nil, nil, fmt.Errorf("unknown AUTH_TYPE %q", authType)
 	}
+}
+
+// buildRoutingSource constructs a RoutingTokenSource that wraps globalSrc as
+// the default and registers a per-type source for every auth type whose
+// required environment variables are set. Steps that set auth_type use the
+// matching registered source; steps with no auth_type use the global default.
+func buildRoutingSource(globalSrc engine.TokenSource) *auth.RoutingTokenSource {
+	sources := map[string]engine.TokenSource{
+		"none": auth.NoopTokenSource{},
+	}
+
+	if token := os.Getenv("AUTH_STATIC_TOKEN"); token != "" {
+		sources["static"] = auth.NewStaticTokenSource(token)
+	}
+
+	if jwksURL := os.Getenv("AUTH_JWKS_URL"); jwksURL != "" {
+		// jwt type only validates inbound tokens; outbound calls use Noop.
+		sources["jwt"] = auth.NoopTokenSource{}
+	}
+
+	if tokenURL := os.Getenv("AUTH_OIDC_TOKEN_URL"); tokenURL != "" {
+		clientID := os.Getenv("AUTH_OIDC_CLIENT_ID")
+		clientSecret := os.Getenv("AUTH_OIDC_CLIENT_SECRET")
+		if clientID != "" && clientSecret != "" {
+			var scopes []string
+			if s := os.Getenv("AUTH_OIDC_SCOPES"); s != "" {
+				scopes = strings.Fields(s)
+			}
+			sources["oidc"] = auth.NewOIDCTokenSource(tokenURL, clientID, clientSecret, scopes)
+		}
+	}
+
+	if addr := os.Getenv("AUTH_SVID_EXCHANGE_ADDR"); addr != "" {
+		socketPath := os.Getenv("SPIFFE_ENDPOINT_SOCKET")
+		sources["svid-exchange"] = auth.NewSVIDExchangeTokenSource(addr, socketPath)
+	}
+
+	return auth.NewRoutingTokenSource(globalSrc, sources)
 }

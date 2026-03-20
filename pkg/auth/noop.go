@@ -6,14 +6,18 @@
 // case in that switch — no changes to core packages are needed.
 package auth
 
-import "context"
+import (
+	"context"
+
+	"github.com/ngaddam369/saga-conductor/internal/engine"
+)
 
 // NoopTokenSource is a TokenSource that always returns an empty token.
 // No Authorization header is added to outbound step HTTP calls.
 // This is the default when AUTH_TYPE is unset or "none".
 type NoopTokenSource struct{}
 
-func (NoopTokenSource) Token(_ context.Context, _ string, _ string) (string, error) {
+func (NoopTokenSource) Token(_ context.Context, _ string, _ engine.StepAuthContext) (string, error) {
 	return "", nil
 }
 

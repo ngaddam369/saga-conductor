@@ -8,6 +8,8 @@ import (
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
+
+	"github.com/ngaddam369/saga-conductor/internal/engine"
 )
 
 // expiryBuffer is the time before token expiry at which OIDCTokenSource
@@ -59,7 +61,7 @@ func NewOIDCTokenSource(tokenURL, clientID, clientSecret string, scopes []string
 // Token implements engine.TokenSource. It returns the cached access token if
 // it is still valid with at least expiryBuffer remaining; otherwise it fetches
 // a fresh token from the configured token endpoint using the provided context.
-func (s *OIDCTokenSource) Token(ctx context.Context, _ string, _ string) (string, error) {
+func (s *OIDCTokenSource) Token(ctx context.Context, _ string, _ engine.StepAuthContext) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

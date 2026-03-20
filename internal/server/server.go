@@ -25,6 +25,15 @@ import (
 
 var stepNameRE = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
+// validAuthTypes is the set of auth_type values accepted in StepDefinition.
+var validAuthTypes = map[string]bool{
+	"none":          true,
+	"static":        true,
+	"jwt":           true,
+	"oidc":          true,
+	"svid-exchange": true,
+}
+
 // validateStepURL returns an error if raw is not a valid http/https URL within 2048 chars.
 func validateStepURL(raw string) error {
 	if len(raw) > 2048 {
@@ -114,6 +123,9 @@ func (s *Server) CreateSaga(ctx context.Context, req *pb.CreateSagaRequest) (*pb
 		if sd.TargetSpiffeId != "" && !strings.HasPrefix(sd.TargetSpiffeId, "spiffe://") {
 			return nil, status.Errorf(codes.InvalidArgument, "step %d: target_spiffe_id must start with spiffe://", i)
 		}
+		if sd.AuthType != "" && !validAuthTypes[sd.AuthType] {
+			return nil, status.Errorf(codes.InvalidArgument, "step %d: unknown auth_type %q", i, sd.AuthType)
+		}
 		stepDefs[i] = saga.StepDefinition{
 			Name:           sd.Name,
 			ForwardURL:     sd.ForwardUrl,
@@ -122,6 +134,8 @@ func (s *Server) CreateSaga(ctx context.Context, req *pb.CreateSagaRequest) (*pb
 			MaxRetries:     int(sd.MaxRetries),
 			RetryBackoffMs: int(sd.RetryBackoffMs),
 			TargetSPIFFEID: sd.TargetSpiffeId,
+			AuthType:       sd.AuthType,
+			AuthConfig:     sd.AuthConfig,
 		}
 		stepExecs[i] = saga.StepExecution{
 			Name:   sd.Name,

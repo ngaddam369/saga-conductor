@@ -35,7 +35,7 @@ All configuration is via environment variables. Every variable has a default; no
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SAGA_TIMEOUT_SECONDS` | none | Server-wide default execution deadline per saga. `0` or unset means no deadline. Individual sagas override this via `saga_timeout_seconds` in `CreateSaga`. |
+| `SAGA_TIMEOUT_SECONDS` | `3600` | Server-wide default execution deadline per saga in seconds. `0` disables the timeout entirely. Individual sagas override this via `saga_timeout_seconds` in `CreateSaga`. |
 
 ## Graceful shutdown
 

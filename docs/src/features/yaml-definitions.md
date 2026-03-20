@@ -63,7 +63,7 @@ All `StepDefinition` fields are supported in YAML using snake_case:
 |------------|-------------|
 | `name` | Step name (required, unique within the saga) |
 | `forward_url` | URL to POST to when executing the step (required) |
-| `compensate_url` | URL to POST to when compensating |
+| `compensate_url` | URL to POST to when compensating the step (required) |
 | `timeout_seconds` | Per-step HTTP timeout |
 | `max_retries` | Maximum HTTP retries |
 | `retry_backoff_ms` | Base backoff in milliseconds |

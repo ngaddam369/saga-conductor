@@ -117,14 +117,14 @@ func run(log zerolog.Logger) error {
 
 	// Resume any sagas left in RUNNING or COMPENSATING state by a previous crash.
 	resumeCtx := log.WithContext(context.Background())
-	if err = scheduler.New(s, eng).Run(resumeCtx); err != nil {
+	if err = scheduler.New(s, eng, log).Run(resumeCtx); err != nil {
 		return fmt.Errorf("scheduler: %w", err)
 	}
 
 	// Start background data-retention purger.
 	purgeCtx, purgeCancel := context.WithCancel(context.Background())
 	defer purgeCancel()
-	go purger.New(s).Run(purgeCtx)
+	go purger.New(s, log).Run(purgeCtx)
 
 	var srvOpts []server.Option
 	if defPath := os.Getenv("SAGA_DEFINITIONS_PATH"); defPath != "" {

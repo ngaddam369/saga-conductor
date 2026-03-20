@@ -1867,6 +1867,55 @@ func TestObserverCalledOnFailedSaga(t *testing.T) {
 	}
 }
 
+func TestResumeTerminalSagaIsNoop(t *testing.T) {
+	t.Parallel()
+	eng, s := newEngine(t)
+	ok, calls := stepServer(t, http.StatusOK)
+	seedSaga(t, s, []saga.StepDefinition{
+		{Name: "step-1", ForwardURL: ok.URL, CompensateURL: ok.URL},
+	})
+
+	if _, err := eng.Start(context.Background(), "saga-1"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	callsAfterStart := *calls
+
+	exec, err := eng.Resume(context.Background(), "saga-1")
+	if err != nil {
+		t.Fatalf("Resume on COMPLETED saga: %v", err)
+	}
+	if exec.Status != saga.SagaStatusCompleted {
+		t.Errorf("Status: got %s, want COMPLETED", exec.Status)
+	}
+	if *calls != callsAfterStart {
+		t.Errorf("Resume made %d extra HTTP calls on terminal saga, want 0", *calls-callsAfterStart)
+	}
+}
+
+func TestResumePendingSagaErrors(t *testing.T) {
+	t.Parallel()
+	_, s := newEngine(t)
+	eng := engine.New(s, engine.WithDefaultMaxRetries(0))
+
+	exec := &saga.Execution{
+		ID:        "saga-pending",
+		Name:      "pending-saga",
+		Status:    saga.SagaStatusPending,
+		StepDefs:  []saga.StepDefinition{{Name: "s1", ForwardURL: "http://unused"}},
+		Steps:     []saga.StepExecution{{Name: "s1", Status: saga.StepStatusPending}},
+		Payload:   []byte(`{}`),
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := s.Create(context.Background(), exec); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	_, err := eng.Resume(context.Background(), "saga-pending")
+	if err == nil {
+		t.Fatal("Resume on PENDING saga: expected non-nil error, got nil")
+	}
+}
+
 func TestObserverNilDoesNotPanic(t *testing.T) {
 	t.Parallel()
 	eng, s := newEngine(t) // no WithObserver — observer is nil

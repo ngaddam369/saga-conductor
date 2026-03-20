@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
+
 	"github.com/ngaddam369/saga-conductor/internal/engine"
 	"github.com/ngaddam369/saga-conductor/internal/saga"
 	"github.com/ngaddam369/saga-conductor/internal/scheduler"
@@ -40,7 +42,7 @@ func TestScheduler(t *testing.T) {
 		t.Parallel()
 		s := newStore(t)
 		eng := engine.New(s, engine.WithRetryBackoff(time.Millisecond), engine.WithDefaultMaxRetries(0))
-		sched := scheduler.New(s, eng)
+		sched := scheduler.New(s, eng, zerolog.Nop())
 		if err := sched.Run(context.Background()); err != nil {
 			t.Errorf("Run: %v", err)
 		}
@@ -74,7 +76,7 @@ func TestScheduler(t *testing.T) {
 			}
 
 			eng := engine.New(s, engine.WithRetryBackoff(time.Millisecond), engine.WithDefaultMaxRetries(0))
-			sched := scheduler.New(s, eng)
+			sched := scheduler.New(s, eng, zerolog.Nop())
 			if err := sched.Run(context.Background()); err != nil {
 				t.Fatalf("Run: %v", err)
 			}
@@ -112,7 +114,7 @@ func TestScheduler(t *testing.T) {
 			}
 
 			eng := engine.New(s, engine.WithRetryBackoff(time.Millisecond), engine.WithDefaultMaxRetries(0))
-			sched := scheduler.New(s, eng)
+			sched := scheduler.New(s, eng, zerolog.Nop())
 			if err := sched.Run(context.Background()); err != nil {
 				t.Fatalf("Run: %v", err)
 			}
@@ -155,7 +157,7 @@ func TestScheduler(t *testing.T) {
 			}
 
 			eng := engine.New(s, engine.WithRetryBackoff(time.Millisecond), engine.WithDefaultMaxRetries(0))
-			sched := scheduler.New(s, eng)
+			sched := scheduler.New(s, eng, zerolog.Nop())
 			if err := sched.Run(context.Background()); err != nil {
 				t.Fatalf("Run: %v", err)
 			}

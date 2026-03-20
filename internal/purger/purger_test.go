@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
+
 	"github.com/ngaddam369/saga-conductor/internal/purger"
 	"github.com/ngaddam369/saga-conductor/internal/saga"
 	"github.com/ngaddam369/saga-conductor/internal/store"
@@ -43,7 +45,7 @@ func TestPurger(t *testing.T) {
 		createExec(t, s, "old-completed", saga.SagaStatusCompleted, 200*24*time.Hour)
 		createExec(t, s, "old-failed", saga.SagaStatusFailed, 200*24*time.Hour)
 
-		p := purger.NewWithConfig(s, 0, 24)
+		p := purger.NewWithConfig(s, 0, 24, zerolog.Nop())
 		n, err := p.Purge(context.Background())
 		if err != nil {
 			t.Fatalf("Purge: %v", err)
@@ -66,7 +68,7 @@ func TestPurger(t *testing.T) {
 		createExec(t, s, "old-completed", saga.SagaStatusCompleted, 100*24*time.Hour)
 		createExec(t, s, "old-failed", saga.SagaStatusFailed, 100*24*time.Hour)
 
-		p := purger.NewWithConfig(s, 90, 24) // 90-day retention
+		p := purger.NewWithConfig(s, 90, 24, zerolog.Nop()) // 90-day retention
 		n, err := p.Purge(context.Background())
 		if err != nil {
 			t.Fatalf("Purge: %v", err)
@@ -88,7 +90,7 @@ func TestPurger(t *testing.T) {
 		createExec(t, s, "recent-completed", saga.SagaStatusCompleted, 10*24*time.Hour)
 		createExec(t, s, "recent-failed", saga.SagaStatusFailed, 10*24*time.Hour)
 
-		p := purger.NewWithConfig(s, 90, 24)
+		p := purger.NewWithConfig(s, 90, 24, zerolog.Nop())
 		n, err := p.Purge(context.Background())
 		if err != nil {
 			t.Fatalf("Purge: %v", err)
@@ -111,7 +113,7 @@ func TestPurger(t *testing.T) {
 		createExec(t, s, "old-running", saga.SagaStatusRunning, 200*24*time.Hour)
 		createExec(t, s, "old-compensating", saga.SagaStatusCompensating, 200*24*time.Hour)
 
-		p := purger.NewWithConfig(s, 90, 24)
+		p := purger.NewWithConfig(s, 90, 24, zerolog.Nop())
 		n, err := p.Purge(context.Background())
 		if err != nil {
 			t.Fatalf("Purge: %v", err)
@@ -134,7 +136,7 @@ func TestPurger(t *testing.T) {
 		createExec(t, s, "recent", saga.SagaStatusCompleted, 5*24*time.Hour)
 		createExec(t, s, "non-terminal", saga.SagaStatusRunning, 200*24*time.Hour)
 
-		p := purger.NewWithConfig(s, 90, 24)
+		p := purger.NewWithConfig(s, 90, 24, zerolog.Nop())
 		n, err := p.Purge(context.Background())
 		if err != nil {
 			t.Fatalf("Purge: %v", err)
@@ -163,7 +165,7 @@ func TestPurger(t *testing.T) {
 		// Too recent for 30-day retention.
 		createExec(t, s, "recent", saga.SagaStatusFailed, 20*24*time.Hour)
 
-		p := purger.New(s)
+		p := purger.New(s, zerolog.Nop())
 		n, err := p.Purge(context.Background())
 		if err != nil {
 			t.Fatalf("Purge: %v", err)
@@ -184,7 +186,7 @@ func TestPurger(t *testing.T) {
 		s := newTestStore(t)
 
 		ctx, cancel := context.WithCancel(context.Background())
-		p := purger.NewWithConfig(s, 90, 1000) // 1000-hour interval — won't tick in test
+		p := purger.NewWithConfig(s, 90, 1000, zerolog.Nop()) // 1000-hour interval — won't tick in test
 
 		done := make(chan struct{})
 		go func() {
@@ -199,4 +201,32 @@ func TestPurger(t *testing.T) {
 			t.Fatal("Run did not stop after context cancellation")
 		}
 	})
+}
+
+func TestPurgeEmptyStore(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	p := purger.NewWithConfig(s, 90, 24, zerolog.Nop())
+	n, err := p.Purge(context.Background())
+	if err != nil {
+		t.Fatalf("Purge on empty store: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("deleted %d sagas from empty store, want 0", n)
+	}
+}
+
+func TestPurgeContextCancelled(t *testing.T) {
+	t.Parallel()
+	s := newTestStore(t)
+	createExec(t, s, "old-completed", saga.SagaStatusCompleted, 200*24*time.Hour)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel before calling Purge
+
+	p := purger.NewWithConfig(s, 90, 24, zerolog.Nop())
+	_, err := p.Purge(ctx)
+	if err == nil {
+		t.Fatal("Purge with cancelled context: expected non-nil error, got nil")
+	}
 }

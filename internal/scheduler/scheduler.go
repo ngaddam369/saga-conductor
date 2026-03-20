@@ -7,8 +7,9 @@ package scheduler
 import (
 	"context"
 	"fmt"
-	"os"
 	"sync"
+
+	"github.com/rs/zerolog"
 
 	"github.com/ngaddam369/saga-conductor/internal/saga"
 	"github.com/ngaddam369/saga-conductor/internal/store"
@@ -24,18 +25,19 @@ type Engine interface {
 type Scheduler struct {
 	store  store.Store
 	engine Engine
+	log    zerolog.Logger
 }
 
 // New returns a Scheduler backed by the given store and engine.
-func New(s store.Store, eng Engine) *Scheduler {
-	return &Scheduler{store: s, engine: eng}
+func New(s store.Store, eng Engine, log zerolog.Logger) *Scheduler {
+	return &Scheduler{store: s, engine: eng, log: log}
 }
 
 // Run lists all RUNNING and COMPENSATING sagas and resumes each one in a
 // separate goroutine. It blocks until every resumed saga has reached a
-// terminal state or ctx is cancelled. Individual saga errors are logged to
-// stderr but do not abort other resumes; a non-nil error is only returned if
-// the store itself cannot be queried.
+// terminal state or ctx is cancelled. Individual saga errors are logged via
+// the structured logger but do not abort other resumes; a non-nil error is
+// only returned if the store itself cannot be queried.
 func (s *Scheduler) Run(ctx context.Context) error {
 	running, _, err := s.store.List(ctx, saga.SagaStatusRunning, 0, "")
 	if err != nil {
@@ -57,7 +59,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		go func(id string) {
 			defer wg.Done()
 			if _, resumeErr := s.engine.Resume(ctx, id); resumeErr != nil {
-				fmt.Fprintf(os.Stderr, "scheduler: resume saga %s: %v\n", id, resumeErr)
+				s.log.Error().Err(resumeErr).Str("saga_id", id).Msg("scheduler: resume saga failed")
 			}
 		}(exec.ID)
 	}

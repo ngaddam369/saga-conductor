@@ -164,7 +164,7 @@ Forcibly moves a non-terminal saga to `ABORTED`. No compensation is triggered.
 |-------|------|-------------|
 | `name` | `string` | Unique step name within the saga. |
 | `forward_url` | `string` | URL the orchestrator POSTs to when executing the step. |
-| `compensate_url` | `string` | URL the orchestrator POSTs to when compensating the step. |
+| `compensate_url` | `string` | URL the orchestrator POSTs to when compensating the step. **(required)** |
 | `timeout_seconds` | `int32` | Per-step HTTP timeout. `0` uses the engine default. |
 | `max_retries` | `int32` | Maximum HTTP retries. Valid range: 0–100. `0` uses the engine default. |
 | `retry_backoff_ms` | `int32` | Base backoff in milliseconds. Valid range: 0–60000. `0` uses the engine default. |

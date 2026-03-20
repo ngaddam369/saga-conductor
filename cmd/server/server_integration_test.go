@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -33,6 +34,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog"
 
+	"github.com/ngaddam369/saga-conductor/internal/dashboard"
 	"github.com/ngaddam369/saga-conductor/internal/engine"
 	"github.com/ngaddam369/saga-conductor/internal/saga"
 	"github.com/ngaddam369/saga-conductor/internal/server"
@@ -1684,5 +1686,130 @@ func TestMetricsEndpoint(t *testing.T) {
 	// Verify the saga completed counter is present with label status=COMPLETED.
 	if !strings.Contains(text, `saga_conductor_saga_total{status="COMPLETED"}`) {
 		t.Errorf("/metrics missing saga_conductor_saga_total{status=COMPLETED}; got:\n%s", text)
+	}
+}
+
+func TestDashboardPageHandlerServesHTML(t *testing.T) {
+	t.Parallel()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/dashboard", dashboard.PageHandler())
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/dashboard")
+	if err != nil {
+		t.Fatalf("GET /dashboard: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("want 200, got %d", resp.StatusCode)
+	}
+	ct := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("Content-Type: want text/html, got %q", ct)
+	}
+
+	var buf bytes.Buffer
+	if _, err := buf.ReadFrom(resp.Body); err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	body := buf.String()
+	if !strings.Contains(body, "EventSource") {
+		t.Errorf("dashboard HTML missing EventSource; got length %d", len(body))
+	}
+}
+
+// TestDashboardSSEReceivesEngineUpdate wires a real Broadcaster as the engine
+// observer, runs a saga to completion, and verifies the SSE stream delivers
+// the completed saga's ID to the connected browser client.
+func TestDashboardSSEReceivesEngineUpdate(t *testing.T) {
+	t.Parallel()
+
+	s, err := store.NewBoltStore(filepath.Join(t.TempDir(), "dashboard.db"))
+	if err != nil {
+		t.Fatalf("NewBoltStore: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	broadcaster := dashboard.NewBroadcaster()
+	eng := engine.New(s,
+		engine.WithRetryBackoff(time.Millisecond),
+		engine.WithDefaultMaxRetries(0),
+		engine.WithObserver(broadcaster),
+	)
+
+	// Step server — always succeeds.
+	fwd := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(fwd.Close)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/dashboard/events", broadcaster.SSEHandler())
+	httpSrv := httptest.NewServer(mux)
+	t.Cleanup(httpSrv.Close)
+
+	// Open SSE connection before the saga runs.
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, httpSrv.URL+"/dashboard/events", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("SSE GET: %v", err)
+	}
+	t.Cleanup(func() { resp.Body.Close() })
+
+	lines := make(chan string, 32)
+	go func() {
+		defer close(lines)
+		sc := bufio.NewScanner(resp.Body)
+		for sc.Scan() {
+			if data, ok := strings.CutPrefix(sc.Text(), "data: "); ok {
+				lines <- data
+			}
+		}
+	}()
+
+	// Seed and execute the saga.
+	const sagaID = "dashboard-saga-1"
+	if err := s.Create(context.Background(), &saga.Execution{
+		ID:      sagaID,
+		Name:    "dashboard-test",
+		Status:  saga.SagaStatusPending,
+		Payload: []byte(`{}`),
+		StepDefs: []saga.StepDefinition{
+			{Name: "step1", ForwardURL: fwd.URL},
+		},
+		Steps: []saga.StepExecution{
+			{Name: "step1", Status: saga.StepStatusPending},
+		},
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	exec, err := eng.Start(context.Background(), sagaID)
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if exec.Status != saga.SagaStatusCompleted {
+		t.Fatalf("saga status: want COMPLETED, got %s", exec.Status)
+	}
+
+	// At least one SSE event must contain the saga ID.
+	timeout := time.After(3 * time.Second)
+	for {
+		select {
+		case data, ok := <-lines:
+			if !ok {
+				t.Fatal("SSE stream closed before receiving saga ID")
+			}
+			if strings.Contains(data, sagaID) {
+				return // success
+			}
+		case <-timeout:
+			t.Fatalf("timed out waiting for SSE event containing %q", sagaID)
+		}
 	}
 }

@@ -1786,3 +1786,98 @@ type errorTokenSource struct{ err error }
 func (e *errorTokenSource) Token(_ context.Context, _ string, _ engine.StepAuthContext) (string, error) {
 	return "", e.err
 }
+
+// recordingObserver collects every OnUpdate call for assertion in tests.
+type recordingObserver struct {
+	mu      sync.Mutex
+	updates []*saga.Execution
+}
+
+func (o *recordingObserver) OnUpdate(exec *saga.Execution) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	cp := *exec
+	o.updates = append(o.updates, &cp)
+}
+
+func (o *recordingObserver) statuses() []saga.SagaStatus {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	out := make([]saga.SagaStatus, len(o.updates))
+	for i, u := range o.updates {
+		out[i] = u.Status
+	}
+	return out
+}
+
+func TestObserverCalledOnSuccessfulSaga(t *testing.T) {
+	t.Parallel()
+	_, s := newEngine(t)
+	obs := &recordingObserver{}
+	srv, _ := stepServer(t, http.StatusOK)
+	eng := engine.New(s,
+		engine.WithRetryBackoff(time.Millisecond),
+		engine.WithDefaultMaxRetries(0),
+		engine.WithObserver(obs),
+	)
+	seedSaga(t, s, []saga.StepDefinition{{Name: "pay", ForwardURL: srv.URL}})
+
+	exec, err := eng.Start(context.Background(), "saga-1")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if exec.Status != saga.SagaStatusCompleted {
+		t.Fatalf("expected COMPLETED, got %s", exec.Status)
+	}
+
+	statuses := obs.statuses()
+	if len(statuses) == 0 {
+		t.Fatal("observer received no updates")
+	}
+	last := statuses[len(statuses)-1]
+	if last != saga.SagaStatusCompleted {
+		t.Errorf("last observed status: want COMPLETED, got %s", last)
+	}
+}
+
+func TestObserverCalledOnFailedSaga(t *testing.T) {
+	t.Parallel()
+	_, s := newEngine(t)
+	obs := &recordingObserver{}
+	srv, _ := stepServer(t, http.StatusInternalServerError)
+	eng := engine.New(s,
+		engine.WithRetryBackoff(time.Millisecond),
+		engine.WithDefaultMaxRetries(0),
+		engine.WithObserver(obs),
+	)
+	seedSaga(t, s, []saga.StepDefinition{{Name: "pay", ForwardURL: srv.URL}})
+
+	exec, _ := eng.Start(context.Background(), "saga-1")
+	if exec == nil {
+		t.Fatal("expected non-nil exec")
+	}
+
+	statuses := obs.statuses()
+	if len(statuses) == 0 {
+		t.Fatal("observer received no updates")
+	}
+	last := statuses[len(statuses)-1]
+	if last != saga.SagaStatusFailed && last != saga.SagaStatusCompensationFailed {
+		t.Errorf("last observed status: want FAILED or COMPENSATION_FAILED, got %s", last)
+	}
+}
+
+func TestObserverNilDoesNotPanic(t *testing.T) {
+	t.Parallel()
+	eng, s := newEngine(t) // no WithObserver — observer is nil
+	srv, _ := stepServer(t, http.StatusOK)
+	seedSaga(t, s, []saga.StepDefinition{{Name: "pay", ForwardURL: srv.URL}})
+
+	exec, err := eng.Start(context.Background(), "saga-1")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if exec.Status != saga.SagaStatusCompleted {
+		t.Errorf("expected COMPLETED, got %s", exec.Status)
+	}
+}

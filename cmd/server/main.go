@@ -24,6 +24,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
 
+	"github.com/ngaddam369/saga-conductor/internal/dashboard"
 	"github.com/ngaddam369/saga-conductor/internal/engine"
 	"github.com/ngaddam369/saga-conductor/internal/purger"
 	"github.com/ngaddam369/saga-conductor/internal/scheduler"
@@ -105,7 +106,13 @@ func run(log zerolog.Logger) error {
 	}
 
 	routingSrc := buildRoutingSource(tokenSrc)
-	eng := engine.New(s, engine.WithLogger(log), engine.WithRecorder(rec), engine.WithTokenSource(routingSrc))
+	broadcaster := dashboard.NewBroadcaster()
+	eng := engine.New(s,
+		engine.WithLogger(log),
+		engine.WithRecorder(rec),
+		engine.WithTokenSource(routingSrc),
+		engine.WithObserver(broadcaster),
+	)
 
 	// Resume any sagas left in RUNNING or COMPENSATING state by a previous crash.
 	resumeCtx := log.WithContext(context.Background())
@@ -157,6 +164,8 @@ func run(log zerolog.Logger) error {
 	ready.Store(true)
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/dashboard", dashboard.PageHandler())
+	mux.HandleFunc("/dashboard/events", broadcaster.SSEHandler())
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/health/live", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)

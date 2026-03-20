@@ -76,6 +76,15 @@ func WithRecorder(r Recorder) Option {
 	}
 }
 
+// WithObserver attaches an Observer that is called after every saga state
+// transition. Defaults to nil (no-op). Implementations must be safe for
+// concurrent use.
+func WithObserver(o Observer) Option {
+	return func(e *Engine) {
+		e.observer = o
+	}
+}
+
 // WithLogger sets the logger used for engine-level events (e.g. best-effort
 // failure recording). Request-scoped logs use the logger embedded in the
 // context via zerolog.Ctx. Defaults to zerolog.Nop() so tests are silent.
@@ -96,6 +105,7 @@ type Engine struct {
 	sagaTimeoutSecs    int
 	log                zerolog.Logger
 	recorder           Recorder
+	observer           Observer
 	tokenSource        TokenSource
 
 	// Graceful-shutdown fields.
@@ -189,6 +199,14 @@ func (e *Engine) recordStep(step *saga.StepExecution) {
 	e.recorder.RecordStep(step.Status, dur)
 }
 
+// notifyObserver calls e.observer.OnUpdate if an observer is set.
+func (e *Engine) notifyObserver(exec *saga.Execution) {
+	if e.observer == nil {
+		return
+	}
+	e.observer.OnUpdate(exec)
+}
+
 // sagaDurationMs returns the elapsed milliseconds between exec.StartedAt and
 // completedAt, or -1 if StartedAt is nil (e.g. resumed from COMPENSATING without
 // a prior RUNNING record in the same process).
@@ -216,6 +234,7 @@ func (e *Engine) updateWithRetry(ctx context.Context, exec *saga.Execution) erro
 	var err error
 	for i := range storeMaxRetries {
 		if err = e.store.Update(ctx, exec); err == nil {
+			e.notifyObserver(exec)
 			return nil
 		}
 		if i < storeMaxRetries-1 {
@@ -247,6 +266,7 @@ func (e *Engine) markFailedBestEffort(exec *saga.Execution, step, cause string) 
 			Msg("store unavailable during best-effort FAILED write; manual recovery required")
 		return
 	}
+	e.notifyObserver(exec)
 	e.recordSaga(exec)
 }
 
@@ -297,6 +317,7 @@ func (e *Engine) Abort(ctx context.Context, id string) (*saga.Execution, error) 
 		return nil, fmt.Errorf("persist ABORTED: %w", err)
 	}
 	zerolog.Ctx(ctx).Info().Str("saga_id", id).Str("status", string(saga.SagaStatusAborted)).Msg("saga aborted")
+	e.notifyObserver(exec)
 	e.recordSaga(exec)
 	return exec, nil
 }
@@ -642,6 +663,7 @@ func (e *Engine) Start(ctx context.Context, id string) (*saga.Execution, error) 
 	if err != nil {
 		return nil, fmt.Errorf("transition to RUNNING: %w", err)
 	}
+	e.notifyObserver(exec)
 	if len(exec.Steps) != len(exec.StepDefs) {
 		return nil, fmt.Errorf("saga %s: corrupted — Steps length %d != StepDefs length %d", id, len(exec.Steps), len(exec.StepDefs))
 	}

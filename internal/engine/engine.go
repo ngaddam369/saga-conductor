@@ -53,6 +53,15 @@ func WithDefaultMaxRetries(n int) Option {
 	}
 }
 
+// WithTokenSource attaches a TokenSource used to inject Authorization headers
+// into outbound step HTTP calls. Defaults to nil (no auth header added).
+// Implementations must be safe for concurrent use.
+func WithTokenSource(ts TokenSource) Option {
+	return func(e *Engine) {
+		e.tokenSource = ts
+	}
+}
+
 // WithRecorder attaches a Recorder that is called after each saga and step
 // terminal transition. Defaults to nil (no-op). Implementations must be safe
 // for concurrent use.
@@ -82,6 +91,7 @@ type Engine struct {
 	sagaTimeoutSecs    int
 	log                zerolog.Logger
 	recorder           Recorder
+	tokenSource        TokenSource
 
 	// Graceful-shutdown fields.
 	// draining is set by Drain() to prevent new Start() calls.
@@ -861,6 +871,15 @@ func (e *Engine) callHTTP(ctx context.Context, url string, payload []byte, timeo
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if e.tokenSource != nil {
+		tok, tokErr := e.tokenSource.Token(ctx, url)
+		if tokErr != nil {
+			return nil, fmt.Errorf("token source: %w", tokErr)
+		}
+		if tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
+	}
 
 	start := time.Now()
 	resp, err := e.httpClient.Do(req)

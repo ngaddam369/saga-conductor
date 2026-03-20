@@ -1626,3 +1626,115 @@ func TestEngineRecorder(t *testing.T) {
 		}
 	})
 }
+
+func TestEngineTokenSource(t *testing.T) {
+	t.Parallel()
+
+	t.Run("token is sent as Authorization header", func(t *testing.T) {
+		t.Parallel()
+
+		var gotHeader string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotHeader = r.Header.Get("Authorization")
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(srv.Close)
+
+		s, err := store.NewBoltStore(filepath.Join(t.TempDir(), "tok.db"))
+		if err != nil {
+			t.Fatalf("NewBoltStore: %v", err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+
+		ts := &staticTokenSource{token: "test-bearer-token"}
+		eng := engine.New(s,
+			engine.WithRetryBackoff(time.Millisecond),
+			engine.WithDefaultMaxRetries(0),
+			engine.WithTokenSource(ts),
+		)
+
+		seedSaga(t, s, []saga.StepDefinition{
+			{Name: "step1", ForwardURL: srv.URL, CompensateURL: srv.URL},
+		})
+
+		if _, err := eng.Start(context.Background(), "saga-1"); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+
+		if gotHeader != "Bearer test-bearer-token" {
+			t.Errorf("Authorization header: want %q, got %q", "Bearer test-bearer-token", gotHeader)
+		}
+	})
+
+	t.Run("nil token source sends no Authorization header", func(t *testing.T) {
+		t.Parallel()
+
+		var gotHeader string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotHeader = r.Header.Get("Authorization")
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(srv.Close)
+
+		eng, s := newEngine(t)
+		seedSaga(t, s, []saga.StepDefinition{
+			{Name: "step1", ForwardURL: srv.URL, CompensateURL: srv.URL},
+		})
+
+		if _, err := eng.Start(context.Background(), "saga-1"); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+
+		if gotHeader != "" {
+			t.Errorf("expected no Authorization header, got %q", gotHeader)
+		}
+	})
+
+	t.Run("token source error fails the step", func(t *testing.T) {
+		t.Parallel()
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(srv.Close)
+
+		s, err := store.NewBoltStore(filepath.Join(t.TempDir(), "tokerr.db"))
+		if err != nil {
+			t.Fatalf("NewBoltStore: %v", err)
+		}
+		t.Cleanup(func() { _ = s.Close() })
+
+		ts := &errorTokenSource{err: errors.New("token unavailable")}
+		eng := engine.New(s,
+			engine.WithRetryBackoff(time.Millisecond),
+			engine.WithDefaultMaxRetries(0),
+			engine.WithTokenSource(ts),
+		)
+
+		seedSaga(t, s, []saga.StepDefinition{
+			{Name: "step1", ForwardURL: srv.URL, CompensateURL: srv.URL},
+		})
+
+		exec, _ := eng.Start(context.Background(), "saga-1")
+		if exec == nil {
+			t.Fatal("expected non-nil exec")
+		}
+		if exec.Status != saga.SagaStatusFailed {
+			t.Errorf("saga status: want FAILED, got %s", exec.Status)
+		}
+	})
+}
+
+// staticTokenSource always returns the same token.
+type staticTokenSource struct{ token string }
+
+func (s *staticTokenSource) Token(_ context.Context, _ string) (string, error) {
+	return s.token, nil
+}
+
+// errorTokenSource always returns an error.
+type errorTokenSource struct{ err error }
+
+func (e *errorTokenSource) Token(_ context.Context, _ string) (string, error) {
+	return "", e.err
+}

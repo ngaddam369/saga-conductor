@@ -88,8 +88,16 @@ func run(log zerolog.Logger) error {
 	srv := server.New(s, eng, time.Duration(cfg.idempotencyKeyTTLHours)*time.Hour)
 
 	handlerTimeout := time.Duration(cfg.grpcHandlerTimeoutSecs) * time.Second
+	// AUTH_TYPE controls inbound gRPC authentication. Currently only "none"
+	// (default) is implemented. Future tasks add cases without restructuring main.
+	var validator server.TokenValidator // nil = open server (no-op)
+	_ = validator                       // AUTH_TYPE wiring added in a later task
+
 	grpcServer := grpc.NewServer(
-		grpc.ChainUnaryInterceptor(server.TimeoutInterceptor(handlerTimeout)),
+		grpc.ChainUnaryInterceptor(
+			server.AuthInterceptor(validator),
+			server.TimeoutInterceptor(handlerTimeout),
+		),
 		grpc.MaxRecvMsgSize(cfg.grpcMaxRecvMB*1024*1024),
 		grpc.MaxSendMsgSize(cfg.grpcMaxSendMB*1024*1024),
 		grpc.KeepaliveParams(keepalive.ServerParameters{

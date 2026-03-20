@@ -103,12 +103,20 @@ func (s *Server) CreateSaga(ctx context.Context, req *pb.CreateSagaRequest) (*pb
 		if sd.TimeoutSeconds != 0 && (sd.TimeoutSeconds < 1 || sd.TimeoutSeconds > 3600) {
 			return nil, status.Errorf(codes.InvalidArgument, "step %d: timeout_seconds must be in [1, 3600]", i)
 		}
+		if sd.MaxRetries < 0 || sd.MaxRetries > 100 {
+			return nil, status.Errorf(codes.InvalidArgument, "step %d: max_retries must be in [0, 100]", i)
+		}
+		if sd.RetryBackoffMs < 0 || sd.RetryBackoffMs > 60000 {
+			return nil, status.Errorf(codes.InvalidArgument, "step %d: retry_backoff_ms must be in [0, 60000]", i)
+		}
 
 		stepDefs[i] = saga.StepDefinition{
 			Name:           sd.Name,
 			ForwardURL:     sd.ForwardUrl,
 			CompensateURL:  sd.CompensateUrl,
 			TimeoutSeconds: int(sd.TimeoutSeconds),
+			MaxRetries:     int(sd.MaxRetries),
+			RetryBackoffMs: int(sd.RetryBackoffMs),
 		}
 		stepExecs[i] = saga.StepExecution{
 			Name:   sd.Name,

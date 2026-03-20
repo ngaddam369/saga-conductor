@@ -373,6 +373,55 @@ func TestServer(t *testing.T) {
 				req:      &pb.CreateSagaRequest{Name: "saga", Steps: validSteps(), SagaTimeoutSeconds: 86400},
 				wantCode: codes.OK,
 			},
+			{
+				name: "max_retries negative rejected",
+				req: &pb.CreateSagaRequest{Name: "saga", Steps: []*pb.StepDefinition{
+					{Name: "step-1", ForwardUrl: "http://x.com/f", CompensateUrl: "http://x.com/c", MaxRetries: -1},
+				}},
+				wantCode: codes.InvalidArgument,
+			},
+			{
+				name: "max_retries above 100 rejected",
+				req: &pb.CreateSagaRequest{Name: "saga", Steps: []*pb.StepDefinition{
+					{Name: "step-1", ForwardUrl: "http://x.com/f", CompensateUrl: "http://x.com/c", MaxRetries: 101},
+				}},
+				wantCode: codes.InvalidArgument,
+			},
+			{
+				name: "max_retries=0 allowed (use server default)",
+				req: &pb.CreateSagaRequest{Name: "saga", Steps: []*pb.StepDefinition{
+					{Name: "step-1", ForwardUrl: "http://x.com/f", CompensateUrl: "http://x.com/c", MaxRetries: 0},
+				}},
+				wantCode: codes.OK,
+			},
+			{
+				name: "max_retries=100 at boundary",
+				req: &pb.CreateSagaRequest{Name: "saga", Steps: []*pb.StepDefinition{
+					{Name: "step-1", ForwardUrl: "http://x.com/f", CompensateUrl: "http://x.com/c", MaxRetries: 100},
+				}},
+				wantCode: codes.OK,
+			},
+			{
+				name: "retry_backoff_ms negative rejected",
+				req: &pb.CreateSagaRequest{Name: "saga", Steps: []*pb.StepDefinition{
+					{Name: "step-1", ForwardUrl: "http://x.com/f", CompensateUrl: "http://x.com/c", RetryBackoffMs: -1},
+				}},
+				wantCode: codes.InvalidArgument,
+			},
+			{
+				name: "retry_backoff_ms above 60000 rejected",
+				req: &pb.CreateSagaRequest{Name: "saga", Steps: []*pb.StepDefinition{
+					{Name: "step-1", ForwardUrl: "http://x.com/f", CompensateUrl: "http://x.com/c", RetryBackoffMs: 60001},
+				}},
+				wantCode: codes.InvalidArgument,
+			},
+			{
+				name: "retry_backoff_ms=60000 at boundary",
+				req: &pb.CreateSagaRequest{Name: "saga", Steps: []*pb.StepDefinition{
+					{Name: "step-1", ForwardUrl: "http://x.com/f", CompensateUrl: "http://x.com/c", RetryBackoffMs: 60000},
+				}},
+				wantCode: codes.OK,
+			},
 		}
 
 		for _, tc := range tests {

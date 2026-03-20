@@ -194,6 +194,16 @@ func sagaDurationMs(exec *saga.Execution, completedAt time.Time) int64 {
 	return completedAt.Sub(*exec.StartedAt).Milliseconds()
 }
 
+// stepDurationMs returns the step's wall-clock duration in milliseconds.
+// Returns -1 when StartedAt is nil (e.g. a step that was already in RUNNING
+// state when Resume loaded it, meaning it crashed before StartedAt was set).
+func stepDurationMs(step *saga.StepExecution, completedAt time.Time) int64 {
+	if step.StartedAt == nil {
+		return -1
+	}
+	return completedAt.Sub(*step.StartedAt).Milliseconds()
+}
+
 // updateWithRetry retries store.Update up to storeMaxRetries times with fixed
 // backoff. If the caller's context is done between retries the last store error
 // is returned immediately without waiting for the next attempt.
@@ -230,7 +240,9 @@ func (e *Engine) markFailedBestEffort(exec *saga.Execution, step, cause string) 
 			Str("step", step).
 			Str("cause", cause).
 			Msg("store unavailable during best-effort FAILED write; manual recovery required")
+		return
 	}
+	e.recordSaga(exec)
 }
 
 // Abort forcibly transitions a non-terminal saga to ABORTED and persists the
@@ -387,6 +399,9 @@ func (e *Engine) Resume(ctx context.Context, id string) (*saga.Execution, error)
 					e.markFailedBestEffort(exec, step.Name, uerr.Error())
 					return nil, fmt.Errorf("persist step FAILED: %w", uerr)
 				}
+				log.Error().Str("step", step.Name).Str("status", string(saga.StepStatusFailed)).
+					Int64("duration_ms", stepDurationMs(step, *step.CompletedAt)).
+					Str("error", err.Error()).Msg("step failed")
 				e.recordStep(step)
 				failedIdx = i
 				break
@@ -400,6 +415,8 @@ func (e *Engine) Resume(ctx context.Context, id string) (*saga.Execution, error)
 				e.markFailedBestEffort(exec, step.Name, err.Error())
 				return nil, fmt.Errorf("persist step SUCCEEDED: %w", err)
 			}
+			log.Info().Str("step", step.Name).Str("status", string(saga.StepStatusSucceeded)).
+				Int64("duration_ms", stepDurationMs(step, *step.CompletedAt)).Msg("step succeeded")
 			e.recordStep(step)
 		}
 
@@ -484,6 +501,7 @@ compensate:
 		}
 		// For COMPENSATING: already marked; just retry the HTTP call.
 
+		compStartedAt := time.Now().UTC()
 		compDetail, compErr := e.callHTTPWithRetry(compCtx, def.CompensateURL, exec.Payload, def)
 
 		t := time.Now().UTC()
@@ -511,6 +529,7 @@ compensate:
 				return nil, fmt.Errorf("persist COMPENSATION_FAILED: %w", err)
 			}
 			log.Error().Str("step", step.Name).Str("status", string(saga.StepStatusCompensationFailed)).
+				Int64("duration_ms", t.Sub(compStartedAt).Milliseconds()).
 				Str("error", compErr.Error()).Msg("step compensation failed; saga dead-lettered")
 			e.recordStep(step)
 			e.recordSaga(exec)
@@ -526,6 +545,9 @@ compensate:
 			e.markFailedBestEffort(exec, step.Name, err.Error())
 			return nil, fmt.Errorf("persist compensation result: %w", err)
 		}
+		log.Info().Str("step", step.Name).Str("status", string(saga.StepStatusCompensated)).
+			Int64("duration_ms", t.Sub(compStartedAt).Milliseconds()).Msg("step compensated")
+		e.recordStep(step)
 	}
 
 	failed := time.Now().UTC()

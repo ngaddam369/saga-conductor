@@ -24,6 +24,7 @@ type config struct {
 	healthIdleTimeoutSecs  int
 
 	// gRPC handler timeout (applied to all RPCs except StartSaga).
+	// 0 disables the handler timeout entirely.
 	grpcHandlerTimeoutSecs int
 
 	// Graceful-stop fallback: if GracefulStop does not complete within this
@@ -32,6 +33,14 @@ type config struct {
 
 	// Idempotency key TTL: how long CreateSaga idempotency keys are retained.
 	idempotencyKeyTTLHours int
+
+	// Shutdown tuning.
+	// shutdownDrainSecs is the pause after readiness flips false before
+	// closing connections. 0 skips the drain wait entirely.
+	shutdownDrainSecs int
+	// shutdownSagaTimeoutSecs is how long to wait for in-flight sagas to
+	// complete before forcing gRPC stop.
+	shutdownSagaTimeoutSecs int
 }
 
 func loadConfig() config {
@@ -51,10 +60,15 @@ func loadConfig() config {
 		healthWriteTimeoutSecs: getEnvInt("HEALTH_WRITE_TIMEOUT_SECONDS", 5),
 		healthIdleTimeoutSecs:  getEnvInt("HEALTH_IDLE_TIMEOUT_SECONDS", 60),
 
-		grpcHandlerTimeoutSecs: getEnvInt("GRPC_HANDLER_TIMEOUT_SECONDS", 60),
+		// 0 is valid: disables the handler timeout entirely.
+		grpcHandlerTimeoutSecs: getEnvIntNonNeg("GRPC_HANDLER_TIMEOUT_SECONDS", 60),
 		grpcStopTimeoutSecs:    getEnvInt("GRPC_STOP_TIMEOUT_SECONDS", 30),
 
 		idempotencyKeyTTLHours: getEnvInt("IDEMPOTENCY_KEY_TTL_HOURS", 24),
+
+		// 0 is valid for shutdownDrainSecs: skips the drain wait entirely.
+		shutdownDrainSecs:       getEnvIntNonNeg("SHUTDOWN_DRAIN_SECONDS", 5),
+		shutdownSagaTimeoutSecs: getEnvInt("SHUTDOWN_SAGA_TIMEOUT_SECONDS", 30),
 	}
 }
 
@@ -68,6 +82,17 @@ func getEnv(key, fallback string) string {
 func getEnvInt(key string, fallback int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return fallback
+}
+
+// getEnvIntNonNeg is like getEnvInt but also accepts zero. Use this for
+// config fields where 0 carries distinct meaning (e.g. "disabled").
+func getEnvIntNonNeg(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			return n
 		}
 	}

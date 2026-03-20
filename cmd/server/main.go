@@ -211,13 +211,12 @@ func run(log zerolog.Logger) error {
 	// Signal unreadiness so the load balancer stops routing new traffic, then
 	// wait for the drain period before closing connections.
 	ready.Store(false)
-	drainSecs := getEnvInt("SHUTDOWN_DRAIN_SECONDS", 5)
-	time.Sleep(time.Duration(drainSecs) * time.Second)
+	time.Sleep(time.Duration(cfg.shutdownDrainSecs) * time.Second)
 
 	// Wait for in-flight sagas to complete before tearing down the gRPC server.
 	// If they don't finish within the saga shutdown timeout, log the interrupted
 	// IDs — the scheduler will resume them on the next startup.
-	sagaShutdownTimeout := time.Duration(getEnvInt("SHUTDOWN_SAGA_TIMEOUT_SECONDS", 30)) * time.Second
+	sagaShutdownTimeout := time.Duration(cfg.shutdownSagaTimeoutSecs) * time.Second
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), sagaShutdownTimeout)
 	interrupted := eng.Drain(drainCtx)
 	drainCancel()

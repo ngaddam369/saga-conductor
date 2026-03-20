@@ -45,6 +45,12 @@ message StepDefinition {
   string compensate_url = 3;
   // Maximum seconds to wait for a step HTTP response (0 = server default).
   int32 timeout_seconds = 4;
+  // Maximum number of HTTP retries on failure (0 = server default).
+  // Valid range: 0–100.
+  int32 max_retries = 5;
+  // Base backoff in milliseconds for retry delays (0 = server default).
+  // Valid range: 0–60000 (1 minute).
+  int32 retry_backoff_ms = 6;
 }
 
 message StepExecution {

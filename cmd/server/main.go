@@ -19,6 +19,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/spiffe/go-spiffe/v2/spiffetls/tlsconfig"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
@@ -86,6 +87,18 @@ func run(log zerolog.Logger) error {
 	}
 	defer closeGRPCCreds()
 
+	shutdownTracing, err := buildTracerProvider(ctx, os.Getenv("OTLP_ENDPOINT"))
+	if err != nil {
+		return fmt.Errorf("tracing: %w", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracing(shutdownCtx); err != nil {
+			log.Error().Err(err).Msg("flush traces failed")
+		}
+	}()
+
 	tokenSrc, validator, err := buildAuthProviders(getEnv("AUTH_TYPE", "none"))
 	if err != nil {
 		return err
@@ -109,6 +122,7 @@ func run(log zerolog.Logger) error {
 
 	handlerTimeout := time.Duration(cfg.grpcHandlerTimeoutSecs) * time.Second
 	grpcOpts := []grpc.ServerOption{
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 		grpc.ChainUnaryInterceptor(
 			server.AuthInterceptor(validator),
 			server.TimeoutInterceptor(handlerTimeout),

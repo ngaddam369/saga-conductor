@@ -20,6 +20,11 @@ import (
 	"time"
 
 	"github.com/rs/zerolog"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	otelcodes "go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/ngaddam369/saga-conductor/internal/saga"
 	"github.com/ngaddam369/saga-conductor/internal/store"
@@ -893,17 +898,38 @@ func (e *Engine) callHTTP(ctx context.Context, url string, payload []byte, timeo
 		timeout = time.Duration(timeoutSeconds) * time.Second
 	}
 
-	reqCtx, cancel := context.WithTimeout(ctx, timeout)
+	// Start a client span covering the full step HTTP call. Using ctx (not
+	// reqCtx) as the parent so the span lifetime is not bounded by the
+	// per-request timeout — the span ends via defer after the function returns.
+	spanCtx, span := otel.Tracer("saga-conductor/engine").Start(ctx, "saga.step.http",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("http.request.method", http.MethodPost),
+			attribute.String("url.full", url),
+		),
+	)
+	defer span.End()
+
+	reqCtx, cancel := context.WithTimeout(spanCtx, timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(otelcodes.Error, err.Error())
 		return nil, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+
+	// Inject W3C trace context into outbound headers so downstream services
+	// appear as child spans in the same trace.
+	otel.GetTextMapPropagator().Inject(spanCtx, propagation.HeaderCarrier(req.Header))
+
 	if e.tokenSource != nil {
 		tok, tokErr := e.tokenSource.Token(ctx, url, auth)
 		if tokErr != nil {
+			span.RecordError(tokErr)
+			span.SetStatus(otelcodes.Error, tokErr.Error())
 			return nil, fmt.Errorf("token source: %w", tokErr)
 		}
 		if tok != "" {
@@ -915,6 +941,8 @@ func (e *Engine) callHTTP(ctx context.Context, url string, payload []byte, timeo
 	resp, err := e.httpClient.Do(req)
 	durationMs := time.Since(start).Milliseconds()
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(otelcodes.Error, err.Error())
 		msg := fmt.Sprintf("http post %s: %v", url, err)
 		return &saga.StepError{
 			Message:        msg,
@@ -922,6 +950,8 @@ func (e *Engine) callHTTP(ctx context.Context, url string, payload []byte, timeo
 			DurationMs:     durationMs,
 		}, fmt.Errorf("http post %s: %w", url, err)
 	}
+
+	span.SetAttributes(attribute.Int("http.response.status_code", resp.StatusCode))
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		// Read up to 512 bytes of the body for operator diagnostics; drain
@@ -935,6 +965,7 @@ func (e *Engine) callHTTP(ctx context.Context, url string, payload []byte, timeo
 		_ = drainErr
 		_ = closeErr
 		msg := fmt.Sprintf("step returned HTTP %d", resp.StatusCode)
+		span.SetStatus(otelcodes.Error, msg)
 		return &saga.StepError{
 			Message:        msg,
 			HTTPStatusCode: resp.StatusCode,

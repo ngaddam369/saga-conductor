@@ -1,7 +1,9 @@
 package main
 
 import (
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestGetEnvInt(t *testing.T) {
@@ -48,6 +50,7 @@ func TestLoadConfig(t *testing.T) {
 		wantHealthReadSecs       int
 		wantHealthWriteSecs      int
 		wantHealthIdleSecs       int
+		wantGRPCStopTimeoutSecs  int
 	}{
 		{
 			name:                     "defaults when no env vars set",
@@ -64,6 +67,7 @@ func TestLoadConfig(t *testing.T) {
 			wantHealthReadSecs:       5,
 			wantHealthWriteSecs:      5,
 			wantHealthIdleSecs:       60,
+			wantGRPCStopTimeoutSecs:  30,
 		},
 		{
 			name: "all env vars overridden",
@@ -80,6 +84,7 @@ func TestLoadConfig(t *testing.T) {
 				"HEALTH_READ_TIMEOUT_SECONDS":     "10",
 				"HEALTH_WRITE_TIMEOUT_SECONDS":    "10",
 				"HEALTH_IDLE_TIMEOUT_SECONDS":     "120",
+				"GRPC_STOP_TIMEOUT_SECONDS":       "60",
 			},
 			wantGRPCAddr:             ":9090",
 			wantHealthAddr:           ":9091",
@@ -93,6 +98,7 @@ func TestLoadConfig(t *testing.T) {
 			wantHealthReadSecs:       10,
 			wantHealthWriteSecs:      10,
 			wantHealthIdleSecs:       120,
+			wantGRPCStopTimeoutSecs:  60,
 		},
 		{
 			name: "invalid GRPC_MAX_RECV_MB falls back to default",
@@ -111,6 +117,7 @@ func TestLoadConfig(t *testing.T) {
 			wantHealthReadSecs:       5,
 			wantHealthWriteSecs:      5,
 			wantHealthIdleSecs:       60,
+			wantGRPCStopTimeoutSecs:  30,
 		},
 		{
 			name: "zero values fall back to defaults",
@@ -123,6 +130,7 @@ func TestLoadConfig(t *testing.T) {
 				"HEALTH_READ_TIMEOUT_SECONDS":     "0",
 				"HEALTH_WRITE_TIMEOUT_SECONDS":    "0",
 				"HEALTH_IDLE_TIMEOUT_SECONDS":     "0",
+				"GRPC_STOP_TIMEOUT_SECONDS":       "0",
 			},
 			wantGRPCAddr:             ":8080",
 			wantHealthAddr:           ":8081",
@@ -136,6 +144,7 @@ func TestLoadConfig(t *testing.T) {
 			wantHealthReadSecs:       5,
 			wantHealthWriteSecs:      5,
 			wantHealthIdleSecs:       60,
+			wantGRPCStopTimeoutSecs:  30,
 		},
 		{
 			name: "invalid keepalive and health timeout values fall back to defaults",
@@ -147,6 +156,7 @@ func TestLoadConfig(t *testing.T) {
 				"HEALTH_READ_TIMEOUT_SECONDS":     "bad",
 				"HEALTH_WRITE_TIMEOUT_SECONDS":    "-1",
 				"HEALTH_IDLE_TIMEOUT_SECONDS":     "abc",
+				"GRPC_STOP_TIMEOUT_SECONDS":       "bad",
 			},
 			wantGRPCAddr:             ":8080",
 			wantHealthAddr:           ":8081",
@@ -160,6 +170,7 @@ func TestLoadConfig(t *testing.T) {
 			wantHealthReadSecs:       5,
 			wantHealthWriteSecs:      5,
 			wantHealthIdleSecs:       60,
+			wantGRPCStopTimeoutSecs:  30,
 		},
 	}
 
@@ -207,6 +218,64 @@ func TestLoadConfig(t *testing.T) {
 			if cfg.healthIdleTimeoutSecs != tc.wantHealthIdleSecs {
 				t.Errorf("healthIdleTimeoutSecs: got %d, want %d", cfg.healthIdleTimeoutSecs, tc.wantHealthIdleSecs)
 			}
+			if cfg.grpcStopTimeoutSecs != tc.wantGRPCStopTimeoutSecs {
+				t.Errorf("grpcStopTimeoutSecs: got %d, want %d", cfg.grpcStopTimeoutSecs, tc.wantGRPCStopTimeoutSecs)
+			}
 		})
 	}
+}
+
+// hangingStopper is a mock grpcStopper whose GracefulStop blocks until Stop is
+// called. It lets us test the force-stop fallback without needing a real gRPC
+// server with stuck connections.
+type hangingStopper struct {
+	stopCalled atomic.Bool
+	stopped    chan struct{}
+}
+
+func newHangingStopper() *hangingStopper {
+	return &hangingStopper{stopped: make(chan struct{})}
+}
+
+func (h *hangingStopper) GracefulStop() { <-h.stopped }
+func (h *hangingStopper) Stop() {
+	h.stopCalled.Store(true)
+	close(h.stopped)
+}
+
+// immediateStopper is a mock grpcStopper whose GracefulStop returns immediately.
+type immediateStopper struct{}
+
+func (immediateStopper) GracefulStop() {}
+func (immediateStopper) Stop()         {}
+
+func TestGRPCStopWithTimeout(t *testing.T) {
+	t.Run("graceful stop completes before timeout", func(t *testing.T) {
+		start := time.Now()
+		grpcStopWithTimeout(immediateStopper{}, 5*time.Second)
+		if elapsed := time.Since(start); elapsed > 3*time.Second {
+			t.Errorf("took %v; expected immediate return when GracefulStop is fast", elapsed)
+		}
+	})
+
+	t.Run("force stop fires when graceful stop hangs", func(t *testing.T) {
+		h := newHangingStopper()
+
+		const stopTimeout = 50 * time.Millisecond
+		start := time.Now()
+		grpcStopWithTimeout(h, stopTimeout)
+		elapsed := time.Since(start)
+
+		if !h.stopCalled.Load() {
+			t.Error("Stop() was not called; expected force stop after timeout")
+		}
+		// Should have waited at least the timeout before forcing.
+		if elapsed < stopTimeout {
+			t.Errorf("returned after %v; expected to wait at least %s", elapsed, stopTimeout)
+		}
+		// Should not hang much beyond the timeout.
+		if elapsed > 3*time.Second {
+			t.Errorf("took %v; expected force stop to fire promptly after %s", elapsed, stopTimeout)
+		}
+	})
 }

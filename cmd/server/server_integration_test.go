@@ -919,6 +919,103 @@ func TestIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("GRPCStopWithTimeoutIntegration", func(t *testing.T) {
+		// Verify the real gRPC server shuts down correctly via grpcStopWithTimeout.
+		// Two sub-cases:
+		//   (a) No active connections — GracefulStop completes immediately, well
+		//       within the 5s timeout.
+		//   (b) Force-stop path — a client holds an open connection; the 50ms
+		//       timeout fires and Stop() force-closes it.
+
+		t.Run("graceful stop completes when server is idle", func(t *testing.T) {
+			s, err := store.NewBoltStore(filepath.Join(t.TempDir(), "stop-idle.db"))
+			if err != nil {
+				t.Fatalf("NewBoltStore: %v", err)
+			}
+			t.Cleanup(func() { _ = s.Close() })
+
+			grpcSrv := grpc.NewServer()
+			pb.RegisterSagaOrchestratorServer(grpcSrv, server.New(s, engine.New(s)))
+
+			lis, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("listen: %v", err)
+			}
+			go func() { _ = grpcSrv.Serve(lis) }()
+
+			start := time.Now()
+			grpcStopWithTimeout(grpcSrv, 5*time.Second)
+			if elapsed := time.Since(start); elapsed > 3*time.Second {
+				t.Errorf("took %v; expected idle server to stop quickly", elapsed)
+			}
+		})
+
+		t.Run("force stop fires when client holds connection past timeout", func(t *testing.T) {
+			s, err := store.NewBoltStore(filepath.Join(t.TempDir(), "stop-force.db"))
+			if err != nil {
+				t.Fatalf("NewBoltStore: %v", err)
+			}
+			t.Cleanup(func() { _ = s.Close() })
+
+			// Use a slow step so StartSaga stays in-flight, keeping a gRPC stream
+			// active and preventing GracefulStop from completing.
+			release := make(chan struct{})
+			stepSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				<-release
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(func() { close(release); stepSrv.Close() })
+
+			eng := engine.New(s, engine.WithDefaultMaxRetries(0))
+			grpcSrv := grpc.NewServer()
+			pb.RegisterSagaOrchestratorServer(grpcSrv, server.New(s, eng))
+
+			lis, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("listen: %v", err)
+			}
+			go func() { _ = grpcSrv.Serve(lis) }()
+
+			conn, err := grpc.NewClient(lis.Addr().String(),
+				grpc.WithTransportCredentials(insecure.NewCredentials()),
+			)
+			if err != nil {
+				t.Fatalf("dial: %v", err)
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+			client := pb.NewSagaOrchestratorClient(conn)
+
+			created, err := client.CreateSaga(context.Background(), &pb.CreateSagaRequest{
+				Name: "stop-saga",
+				Steps: []*pb.StepDefinition{
+					{Name: "step-1", ForwardUrl: stepSrv.URL, CompensateUrl: stepSrv.URL},
+				},
+			})
+			if err != nil {
+				t.Fatalf("CreateSaga: %v", err)
+			}
+			// StartSaga blocks while step-1 is held; this keeps the gRPC stream open.
+			go func() {
+				_, _ = client.StartSaga(context.Background(), &pb.StartSagaRequest{SagaId: created.Saga.Id})
+			}()
+
+			// Give StartSaga a moment to reach the step server and open the stream.
+			time.Sleep(20 * time.Millisecond)
+
+			const stopTimeout = 100 * time.Millisecond
+			start := time.Now()
+			grpcStopWithTimeout(grpcSrv, stopTimeout)
+			elapsed := time.Since(start)
+
+			if elapsed < stopTimeout {
+				t.Errorf("returned after %v; expected to wait at least %s before forcing", elapsed, stopTimeout)
+			}
+			if elapsed > 3*time.Second {
+				t.Errorf("took %v; expected force stop within ~%s", elapsed, stopTimeout)
+			}
+		})
+	})
+
 	t.Run("HealthReadTimeout", func(t *testing.T) {
 		// A client that opens a connection and never sends headers must be
 		// dropped by the server's ReadTimeout, not held open indefinitely.

@@ -24,6 +24,32 @@ import (
 	pb "github.com/ngaddam369/saga-conductor/proto/saga/v1"
 )
 
+// grpcStopper is the subset of *grpc.Server used by grpcStopWithTimeout.
+// Extracted as an interface so the function can be tested without a real server.
+type grpcStopper interface {
+	GracefulStop()
+	Stop()
+}
+
+// grpcStopWithTimeout attempts a graceful gRPC server stop, waiting up to
+// timeout for all open connections to close. If the deadline is exceeded,
+// Stop() is called to force-close any remaining connections.
+func grpcStopWithTimeout(srv grpcStopper, timeout time.Duration) {
+	graceDone := make(chan struct{})
+	go func() {
+		srv.GracefulStop()
+		close(graceDone)
+	}()
+	select {
+	case <-graceDone:
+	case <-time.After(timeout):
+		fmt.Fprintf(os.Stderr,
+			"saga-conductor: gRPC graceful stop timed out after %s; forcing stop\n",
+			timeout)
+		srv.Stop()
+	}
+}
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "saga-conductor: %v\n", err)
@@ -189,7 +215,13 @@ func run() error {
 			len(interrupted), interrupted)
 	}
 
-	grpcServer.GracefulStop()
+	// Attempt a graceful stop, but enforce a hard deadline. GracefulStop blocks
+	// until every open connection is closed — including idle keep-alive
+	// connections held by well-behaved but slow clients and any connection held
+	// open by a network partition. Without a fallback, a single misbehaving
+	// client can prevent the process from ever exiting, blocking rolling deploys
+	// and pod recycling.
+	grpcStopWithTimeout(grpcServer, time.Duration(cfg.grpcStopTimeoutSecs)*time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

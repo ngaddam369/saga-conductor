@@ -25,6 +25,10 @@ type config struct {
 
 	// gRPC handler timeout (applied to all RPCs except StartSaga).
 	grpcHandlerTimeoutSecs int
+
+	// Graceful-stop fallback: if GracefulStop does not complete within this
+	// duration, Stop() is called to force-close remaining connections.
+	grpcStopTimeoutSecs int
 }
 
 func loadConfig() config {
@@ -45,6 +49,7 @@ func loadConfig() config {
 		healthIdleTimeoutSecs:  getEnvInt("HEALTH_IDLE_TIMEOUT_SECONDS", 60),
 
 		grpcHandlerTimeoutSecs: getEnvInt("GRPC_HANDLER_TIMEOUT_SECONDS", 60),
+		grpcStopTimeoutSecs:    getEnvInt("GRPC_STOP_TIMEOUT_SECONDS", 30),
 	}
 }
 

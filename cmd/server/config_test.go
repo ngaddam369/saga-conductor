@@ -375,3 +375,37 @@ func TestGRPCStopWithTimeout(t *testing.T) {
 		}
 	})
 }
+
+func TestBuildAuthProviders(t *testing.T) {
+	t.Parallel()
+
+	t.Run("none returns noop implementations", func(t *testing.T) {
+		t.Parallel()
+		ts, v, err := buildAuthProviders("none")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if ts == nil {
+			t.Error("TokenSource should not be nil")
+		}
+		if v == nil {
+			t.Error("TokenValidator should not be nil")
+		}
+	})
+
+	t.Run("empty string uses none (default)", func(t *testing.T) {
+		t.Parallel()
+		_, _, err := buildAuthProviders("none")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("unknown type returns error", func(t *testing.T) {
+		t.Parallel()
+		_, _, err := buildAuthProviders("bogus")
+		if err == nil {
+			t.Error("expected error for unknown AUTH_TYPE, got nil")
+		}
+	})
+}

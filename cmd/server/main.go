@@ -24,6 +24,7 @@ import (
 	"github.com/ngaddam369/saga-conductor/internal/scheduler"
 	"github.com/ngaddam369/saga-conductor/internal/server"
 	"github.com/ngaddam369/saga-conductor/internal/store"
+	"github.com/ngaddam369/saga-conductor/pkg/auth"
 	pb "github.com/ngaddam369/saga-conductor/proto/saga/v1"
 )
 
@@ -72,7 +73,13 @@ func run(log zerolog.Logger) error {
 	}()
 
 	rec := newPrometheusRecorder(prometheus.DefaultRegisterer)
-	eng := engine.New(s, engine.WithLogger(log), engine.WithRecorder(rec))
+
+	tokenSrc, validator, err := buildAuthProviders(getEnv("AUTH_TYPE", "none"))
+	if err != nil {
+		return err
+	}
+
+	eng := engine.New(s, engine.WithLogger(log), engine.WithRecorder(rec), engine.WithTokenSource(tokenSrc))
 
 	// Resume any sagas left in RUNNING or COMPENSATING state by a previous crash.
 	resumeCtx := log.WithContext(context.Background())
@@ -88,11 +95,6 @@ func run(log zerolog.Logger) error {
 	srv := server.New(s, eng, time.Duration(cfg.idempotencyKeyTTLHours)*time.Hour)
 
 	handlerTimeout := time.Duration(cfg.grpcHandlerTimeoutSecs) * time.Second
-	// AUTH_TYPE controls inbound gRPC authentication. Currently only "none"
-	// (default) is implemented. Future tasks add cases without restructuring main.
-	var validator server.TokenValidator // nil = open server (no-op)
-	_ = validator                       // AUTH_TYPE wiring added in a later task
-
 	grpcServer := grpc.NewServer(
 		grpc.ChainUnaryInterceptor(
 			server.AuthInterceptor(validator),
@@ -242,4 +244,20 @@ func run(log zerolog.Logger) error {
 	}
 
 	return nil
+}
+
+// buildAuthProviders selects the TokenSource and TokenValidator implementations
+// based on authType. It is a pure function — no I/O — so it is easy to test.
+//
+// "none" (default): Noop implementations — open server, no outbound token.
+// Future cases ("static", "jwt", "oidc", "svid-exchange") are added here;
+// the interfaces in internal/engine and internal/server never change.
+func buildAuthProviders(authType string) (engine.TokenSource, server.TokenValidator, error) {
+	switch authType {
+	case "none":
+		return auth.NoopTokenSource{}, auth.NoopTokenValidator{}, nil
+	// Future cases: "static", "jwt", "oidc", "svid-exchange"
+	default:
+		return nil, nil, fmt.Errorf("unknown AUTH_TYPE %q", authType)
+	}
 }

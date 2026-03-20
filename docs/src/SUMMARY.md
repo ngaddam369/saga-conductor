@@ -1,0 +1,15 @@
+# Summary
+
+- [Introduction](introduction.md)
+- [Architecture](architecture.md)
+- [Getting Started](getting-started.md)
+- [Configuration](configuration.md)
+- [Features](features/index.md)
+  - [Authentication](features/auth.md)
+  - [Prometheus Metrics](features/prometheus-metrics.md)
+  - [Distributed Tracing](features/distributed-tracing.md)
+  - [Real-Time Dashboard](features/dashboard.md)
+  - [YAML Saga Definitions](features/yaml-definitions.md)
+- [Design & Motivation](design.md)
+- [Client Library](client-library.md)
+- [API Reference](api-reference.md)

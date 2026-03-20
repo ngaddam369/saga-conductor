@@ -1,0 +1,11 @@
+[book]
+title = "saga-conductor"
+authors = ["ngaddam369"]
+language = "en"
+src = "src"
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[output.html]
+additional-js = ["mermaid.min.js", "mermaid-init.js"]

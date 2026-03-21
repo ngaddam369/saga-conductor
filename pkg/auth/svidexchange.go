@@ -3,8 +3,6 @@ package auth
 import (
 	"context"
 	"errors"
-	"fmt"
-	"os"
 	"sync"
 
 	"github.com/ngaddam369/svid-exchange/pkg/client"
@@ -136,9 +134,7 @@ func (s *SVIDExchangeTokenSource) getOrCreate(ctx context.Context, spiffeID stri
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if existing, ok := s.clients[spiffeID]; ok {
-		if err := newC.Close(); err != nil {
-			fmt.Fprintf(os.Stderr, "svid-exchange: close duplicate client for %q: %v\n", spiffeID, err)
-		}
+		newC.Close() //nolint:errcheck // close error on a duplicate client is non-actionable
 		return existing, nil
 	}
 	s.clients[spiffeID] = newC

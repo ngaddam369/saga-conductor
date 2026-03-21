@@ -19,8 +19,7 @@ The dashboard displays a live table of all sagas. Each row shows:
 - Saga ID
 - Saga name
 - Current status (colour-coded)
-- Creation time
-- Last updated time
+- Per-step name and status
 
 The table updates in real time as sagas transition through states. Status colours follow the standard traffic-light convention: green for `COMPLETED`, red for `FAILED` and `COMPENSATION_FAILED`, yellow for `RUNNING` and `COMPENSATING`, grey for `PENDING` and `ABORTED`.
 

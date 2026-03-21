@@ -37,8 +37,8 @@ proto:
 		-I $(HOME)/.local/include \
 		$(PROTO_DIR)/saga.proto
 
-## verify: run the full checklist (build → lint → mod verify → vulncheck → test)
-verify: build lint test
+## verify: run the full checklist (fmt → build → lint → mod verify → vulncheck → test)
+verify: fmt build lint test
 	go mod verify
 	govulncheck ./...
 

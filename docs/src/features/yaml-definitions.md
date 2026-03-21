@@ -101,6 +101,8 @@ The loader validates definitions at startup:
 - Each saga must have at least one step.
 - Each step must have a non-empty `name`.
 - Each step must have a non-empty `forward_url`.
+- Each step must have a non-empty `compensate_url`.
+- Step names must be unique within each saga.
 
 Invalid definitions cause the server to exit on startup with a descriptive error message.
 

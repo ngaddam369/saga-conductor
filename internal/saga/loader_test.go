@@ -134,6 +134,40 @@ sagas:
 	}
 }
 
+func TestLoadDefinitionsValidationStepMissingCompensateURL(t *testing.T) {
+	t.Parallel()
+	path := writeYAML(t, `
+sagas:
+  - name: bad-saga
+    steps:
+      - name: step1
+        forward_url: http://svc/do
+`)
+	_, err := saga.LoadDefinitions(path)
+	if err == nil {
+		t.Fatal("expected error for missing compensate_url, got nil")
+	}
+}
+
+func TestLoadDefinitionsValidationDuplicateStepName(t *testing.T) {
+	t.Parallel()
+	path := writeYAML(t, `
+sagas:
+  - name: bad-saga
+    steps:
+      - name: step1
+        forward_url: http://svc/do
+        compensate_url: http://svc/undo
+      - name: step1
+        forward_url: http://svc/do2
+        compensate_url: http://svc/undo2
+`)
+	_, err := saga.LoadDefinitions(path)
+	if err == nil {
+		t.Fatal("expected error for duplicate step name, got nil")
+	}
+}
+
 func TestLoadDefinitionsFileNotFound(t *testing.T) {
 	t.Parallel()
 	_, err := saga.LoadDefinitions("/nonexistent/path/sagas.yaml")

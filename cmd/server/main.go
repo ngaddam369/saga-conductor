@@ -83,7 +83,7 @@ func run(log zerolog.Logger) error {
 	rec := newPrometheusRecorder(prometheus.DefaultRegisterer)
 
 	socketPath := os.Getenv("SPIFFE_ENDPOINT_SOCKET")
-	grpcCreds, closeGRPCCreds, err := buildGRPCCredentials(ctx, socketPath)
+	grpcCreds, closeGRPCCreds, err := buildGRPCCredentials(ctx, socketPath, log)
 	if err != nil {
 		return fmt.Errorf("grpc credentials: %w", err)
 	}
@@ -301,7 +301,7 @@ func run(log zerolog.Logger) error {
 // server's X.509 SVID and trusted CA bundles. Returns nil credentials (plain
 // TCP) when socketPath is empty. The caller must invoke the cleanup function
 // to close the workload API connection.
-func buildGRPCCredentials(ctx context.Context, socketPath string) (credentials.TransportCredentials, func(), error) {
+func buildGRPCCredentials(ctx context.Context, socketPath string, log zerolog.Logger) (credentials.TransportCredentials, func(), error) {
 	if socketPath == "" {
 		return nil, func() {}, nil
 	}
@@ -314,7 +314,7 @@ func buildGRPCCredentials(ctx context.Context, socketPath string) (credentials.T
 	tlsCfg := tlsconfig.MTLSServerConfig(source, source, tlsconfig.AuthorizeAny())
 	return credentials.NewTLS(tlsCfg), func() {
 		if err := source.Close(); err != nil {
-			fmt.Fprintf(os.Stderr, "close X.509 source: %v\n", err)
+			log.Error().Err(err).Msg("close X.509 source")
 		}
 	}, nil
 }

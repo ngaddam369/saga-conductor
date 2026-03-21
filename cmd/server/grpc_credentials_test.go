@@ -4,10 +4,12 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 func TestBuildGRPCCredentialsEmptySocket(t *testing.T) {
-	creds, cleanup, err := buildGRPCCredentials(context.Background(), "")
+	creds, cleanup, err := buildGRPCCredentials(context.Background(), "", zerolog.Nop())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -20,7 +22,7 @@ func TestBuildGRPCCredentialsEmptySocket(t *testing.T) {
 func TestBuildGRPCCredentialsUnavailableSocket(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	creds, cleanup, err := buildGRPCCredentials(ctx, "unix:///nonexistent.sock")
+	creds, cleanup, err := buildGRPCCredentials(ctx, "unix:///nonexistent.sock", zerolog.Nop())
 	defer cleanup()
 	if err == nil {
 		t.Fatal("expected error when workload API is unavailable")

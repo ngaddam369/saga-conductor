@@ -42,12 +42,20 @@ func LoadDefinitions(path string) ([]SagaDefinition, error) {
 		if len(def.Steps) == 0 {
 			return nil, fmt.Errorf("definition %q: at least one step is required", def.Name)
 		}
+		seen := make(map[string]struct{})
 		for j, step := range def.Steps {
 			if step.Name == "" {
 				return nil, fmt.Errorf("definition %q step %d: name is required", def.Name, j)
 			}
+			if _, dup := seen[step.Name]; dup {
+				return nil, fmt.Errorf("definition %q: duplicate step name %q", def.Name, step.Name)
+			}
+			seen[step.Name] = struct{}{}
 			if step.ForwardURL == "" {
 				return nil, fmt.Errorf("definition %q step %q: forward_url is required", def.Name, step.Name)
+			}
+			if step.CompensateURL == "" {
+				return nil, fmt.Errorf("definition %q step %q: compensate_url is required", def.Name, step.Name)
 			}
 		}
 	}

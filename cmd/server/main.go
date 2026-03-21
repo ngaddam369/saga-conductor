@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -106,7 +107,8 @@ func run(log zerolog.Logger) error {
 		return err
 	}
 
-	routingSrc := buildRoutingSource(tokenSrc)
+	routingSrc, closeRoutingSrc := buildRoutingSource(tokenSrc, log)
+	defer closeRoutingSrc()
 	broadcaster := dashboard.NewBroadcaster()
 	eng := engine.New(s,
 		engine.WithLogger(log),
@@ -367,7 +369,9 @@ func buildAuthProviders(authType string) (engine.TokenSource, server.TokenValida
 // the default and registers a per-type source for every auth type whose
 // required environment variables are set. Steps that set auth_type use the
 // matching registered source; steps with no auth_type use the global default.
-func buildRoutingSource(globalSrc engine.TokenSource) *auth.RoutingTokenSource {
+// The returned cleanup function closes any token sources that implement
+// io.Closer (e.g. SVIDExchangeTokenSource), and must be called on shutdown.
+func buildRoutingSource(globalSrc engine.TokenSource, log zerolog.Logger) (*auth.RoutingTokenSource, func()) {
 	sources := map[string]engine.TokenSource{
 		"none": auth.NoopTokenSource{},
 	}
@@ -398,5 +402,25 @@ func buildRoutingSource(globalSrc engine.TokenSource) *auth.RoutingTokenSource {
 		sources["svid-exchange"] = auth.NewSVIDExchangeTokenSource(addr, socketPath)
 	}
 
-	return auth.NewRoutingTokenSource(globalSrc, sources)
+	// Collect all io.Closer token sources (global + per-type) so they can be
+	// closed on shutdown to drain pooled gRPC connections gracefully.
+	var closers []io.Closer
+	if c, ok := globalSrc.(io.Closer); ok {
+		closers = append(closers, c)
+	}
+	for _, src := range sources {
+		if c, ok := src.(io.Closer); ok {
+			closers = append(closers, c)
+		}
+	}
+
+	cleanup := func() {
+		for _, c := range closers {
+			if err := c.Close(); err != nil {
+				log.Error().Err(err).Msg("close token source")
+			}
+		}
+	}
+
+	return auth.NewRoutingTokenSource(globalSrc, sources), cleanup
 }

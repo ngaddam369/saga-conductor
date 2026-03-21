@@ -184,3 +184,71 @@ func TestLoadDefinitionsMalformedYAML(t *testing.T) {
 		t.Fatal("expected error for malformed YAML, got nil")
 	}
 }
+
+func TestLoadDefinitionsValidationSagaTimeoutSecondsOutOfRange(t *testing.T) {
+	t.Parallel()
+	path := writeYAML(t, `
+sagas:
+  - name: bad-saga
+    saga_timeout_seconds: 99999
+    steps:
+      - name: step1
+        forward_url: http://svc/do
+        compensate_url: http://svc/undo
+`)
+	_, err := saga.LoadDefinitions(path)
+	if err == nil {
+		t.Fatal("expected error for saga_timeout_seconds out of range, got nil")
+	}
+}
+
+func TestLoadDefinitionsValidationStepTimeoutSecondsOutOfRange(t *testing.T) {
+	t.Parallel()
+	path := writeYAML(t, `
+sagas:
+  - name: bad-saga
+    steps:
+      - name: step1
+        forward_url: http://svc/do
+        compensate_url: http://svc/undo
+        timeout_seconds: 9999
+`)
+	_, err := saga.LoadDefinitions(path)
+	if err == nil {
+		t.Fatal("expected error for step timeout_seconds out of range, got nil")
+	}
+}
+
+func TestLoadDefinitionsValidationMaxRetriesOutOfRange(t *testing.T) {
+	t.Parallel()
+	path := writeYAML(t, `
+sagas:
+  - name: bad-saga
+    steps:
+      - name: step1
+        forward_url: http://svc/do
+        compensate_url: http://svc/undo
+        max_retries: 999
+`)
+	_, err := saga.LoadDefinitions(path)
+	if err == nil {
+		t.Fatal("expected error for max_retries out of range, got nil")
+	}
+}
+
+func TestLoadDefinitionsValidationRetryBackoffMsOutOfRange(t *testing.T) {
+	t.Parallel()
+	path := writeYAML(t, `
+sagas:
+  - name: bad-saga
+    steps:
+      - name: step1
+        forward_url: http://svc/do
+        compensate_url: http://svc/undo
+        retry_backoff_ms: 99999
+`)
+	_, err := saga.LoadDefinitions(path)
+	if err == nil {
+		t.Fatal("expected error for retry_backoff_ms out of range, got nil")
+	}
+}

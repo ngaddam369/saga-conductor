@@ -99,10 +99,14 @@ The loader validates definitions at startup:
 
 - Each saga must have a non-empty `name`.
 - Each saga must have at least one step.
+- `saga_timeout_seconds`, if set, must be in [1, 86400].
 - Each step must have a non-empty `name`.
 - Each step must have a non-empty `forward_url`.
 - Each step must have a non-empty `compensate_url`.
 - Step names must be unique within each saga.
+- Each step's `timeout_seconds`, if set, must be in [1, 3600].
+- Each step's `max_retries` must be in [0, 100].
+- Each step's `retry_backoff_ms` must be in [0, 60000].
 
 Invalid definitions cause the server to exit on startup with a descriptive error message.
 

@@ -42,6 +42,9 @@ func LoadDefinitions(path string) ([]SagaDefinition, error) {
 		if len(def.Steps) == 0 {
 			return nil, fmt.Errorf("definition %q: at least one step is required", def.Name)
 		}
+		if def.SagaTimeoutSeconds != 0 && (def.SagaTimeoutSeconds < 1 || def.SagaTimeoutSeconds > 86400) {
+			return nil, fmt.Errorf("definition %q: saga_timeout_seconds must be in [1, 86400]", def.Name)
+		}
 		seen := make(map[string]struct{})
 		for j, step := range def.Steps {
 			if step.Name == "" {
@@ -56,6 +59,15 @@ func LoadDefinitions(path string) ([]SagaDefinition, error) {
 			}
 			if step.CompensateURL == "" {
 				return nil, fmt.Errorf("definition %q step %q: compensate_url is required", def.Name, step.Name)
+			}
+			if step.TimeoutSeconds != 0 && (step.TimeoutSeconds < 1 || step.TimeoutSeconds > 3600) {
+				return nil, fmt.Errorf("definition %q step %q: timeout_seconds must be in [1, 3600]", def.Name, step.Name)
+			}
+			if step.MaxRetries < 0 || step.MaxRetries > 100 {
+				return nil, fmt.Errorf("definition %q step %q: max_retries must be in [0, 100]", def.Name, step.Name)
+			}
+			if step.RetryBackoffMs < 0 || step.RetryBackoffMs > 60000 {
+				return nil, fmt.Errorf("definition %q step %q: retry_backoff_ms must be in [0, 60000]", def.Name, step.Name)
 			}
 		}
 	}

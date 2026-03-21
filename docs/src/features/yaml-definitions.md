@@ -101,6 +101,7 @@ The loader validates definitions at startup:
 - Each saga must have at least one step.
 - `saga_timeout_seconds`, if set, must be in [1, 86400].
 - Each step must have a non-empty `name`.
+- Each step's `name` must match `^[a-zA-Z0-9_-]{1,64}$`.
 - Each step must have a non-empty `forward_url`.
 - Each step must have a non-empty `compensate_url`.
 - Step names must be unique within each saga.

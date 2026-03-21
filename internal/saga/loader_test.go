@@ -185,6 +185,38 @@ func TestLoadDefinitionsMalformedYAML(t *testing.T) {
 	}
 }
 
+func TestLoadDefinitionsValidationStepNameInvalidFormat(t *testing.T) {
+	t.Parallel()
+	path := writeYAML(t, `
+sagas:
+  - name: bad-saga
+    steps:
+      - name: "step one"
+        forward_url: http://svc/do
+        compensate_url: http://svc/undo
+`)
+	_, err := saga.LoadDefinitions(path)
+	if err == nil {
+		t.Fatal("expected error for step name with space, got nil")
+	}
+}
+
+func TestLoadDefinitionsValidationStepNameTooLong(t *testing.T) {
+	t.Parallel()
+	path := writeYAML(t, `
+sagas:
+  - name: bad-saga
+    steps:
+      - name: "aaaaaaaaaabbbbbbbbbbccccccccccddddddddddeeeeeeeeeefffffffff123456"
+        forward_url: http://svc/do
+        compensate_url: http://svc/undo
+`)
+	_, err := saga.LoadDefinitions(path)
+	if err == nil {
+		t.Fatal("expected error for step name exceeding 64 chars, got nil")
+	}
+}
+
 func TestLoadDefinitionsValidationSagaTimeoutSecondsOutOfRange(t *testing.T) {
 	t.Parallel()
 	path := writeYAML(t, `

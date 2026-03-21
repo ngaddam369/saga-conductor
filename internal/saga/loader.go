@@ -3,9 +3,14 @@ package saga
 import (
 	"fmt"
 	"os"
+	"regexp"
 
 	"gopkg.in/yaml.v3"
 )
+
+// stepNameRE mirrors the validation in internal/server so that YAML-loaded
+// templates are rejected at startup rather than at saga-creation time.
+var stepNameRE = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 
 // SagaDefinition is the in-memory representation of one saga template loaded
 // from a YAML definitions file. Templates are referenced by name when calling
@@ -49,6 +54,9 @@ func LoadDefinitions(path string) ([]SagaDefinition, error) {
 		for j, step := range def.Steps {
 			if step.Name == "" {
 				return nil, fmt.Errorf("definition %q step %d: name is required", def.Name, j)
+			}
+			if !stepNameRE.MatchString(step.Name) {
+				return nil, fmt.Errorf("definition %q step %d: name must match ^[a-zA-Z0-9_-]{1,64}$", def.Name, j)
 			}
 			if _, dup := seen[step.Name]; dup {
 				return nil, fmt.Errorf("definition %q: duplicate step name %q", def.Name, step.Name)

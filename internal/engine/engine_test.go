@@ -1930,3 +1930,86 @@ func TestObserverNilDoesNotPanic(t *testing.T) {
 		t.Errorf("expected COMPLETED, got %s", exec.Status)
 	}
 }
+
+// errBody is an io.ReadCloser whose Read and Close return configurable errors.
+type errBody struct {
+	readErr  error
+	closeErr error
+}
+
+func (b *errBody) Read(_ []byte) (int, error) { return 0, b.readErr }
+func (b *errBody) Close() error               { return b.closeErr }
+
+// errRoundTripper returns a response with the given status code and a body
+// whose Read and Close return the supplied errors.
+type errRoundTripper struct {
+	statusCode int
+	readErr    error
+	closeErr   error
+}
+
+func (rt *errRoundTripper) RoundTrip(_ *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: rt.statusCode,
+		Body:       &errBody{readErr: rt.readErr, closeErr: rt.closeErr},
+	}, nil
+}
+
+func TestCallHTTPDrainErrorOnNon2xxEmitsWarnLog(t *testing.T) {
+	t.Parallel()
+
+	var logBuf bytes.Buffer
+	logger := zerolog.New(&logBuf)
+
+	s, err := store.NewBoltStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewBoltStore: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	drainErr := errors.New("simulated drain error")
+	closeErr := errors.New("simulated close error")
+	rt := &errRoundTripper{statusCode: 500, readErr: drainErr, closeErr: closeErr}
+	httpClient := &http.Client{Transport: rt}
+
+	eng := engine.New(s,
+		engine.WithRetryBackoff(time.Millisecond),
+		engine.WithDefaultMaxRetries(0),
+		engine.WithLogger(logger),
+		engine.WithHTTPClient(httpClient),
+	)
+
+	stepExecs := []saga.StepExecution{{Name: "fail-step", Status: saga.StepStatusPending}}
+	exec := &saga.Execution{
+		ID:        "saga-drain-err",
+		Name:      "drain-err-saga",
+		Status:    saga.SagaStatusPending,
+		StepDefs:  []saga.StepDefinition{{Name: "fail-step", ForwardURL: "http://127.0.0.1:1/unused", CompensateURL: "http://127.0.0.1:1/unused"}},
+		Steps:     stepExecs,
+		Payload:   []byte(`{}`),
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := s.Create(context.Background(), exec); err != nil {
+		t.Fatalf("seed Create: %v", err)
+	}
+
+	result, startErr := eng.Start(context.Background(), "saga-drain-err")
+	if startErr != nil {
+		t.Fatalf("Start: %v", startErr)
+	}
+	// The saga should fail due to the HTTP 500, not due to drain/close errors.
+	if result.Status == saga.SagaStatusCompleted {
+		t.Errorf("expected non-COMPLETED status, got %s", result.Status)
+	}
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "engine: drain response body on error") {
+		t.Errorf("expected warn log for drain error; log output:\n%s", logOutput)
+	}
+	if !strings.Contains(logOutput, "engine: close response body on error") {
+		t.Errorf("expected warn log for close error; log output:\n%s", logOutput)
+	}
+	if !strings.Contains(logOutput, `"level":"warn"`) {
+		t.Errorf("expected level=warn in log output:\n%s", logOutput)
+	}
+}

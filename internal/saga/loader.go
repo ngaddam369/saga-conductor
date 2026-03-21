@@ -48,6 +48,10 @@ func LoadDefinitions(path string) ([]SagaDefinition, error) {
 		if len(def.Steps) == 0 {
 			return nil, fmt.Errorf("definition %q: at least one step is required", def.Name)
 		}
+		if len(def.Steps) > MaxStepsPerSaga {
+			return nil, fmt.Errorf("definition %q: too many steps (%d); maximum is %d",
+				def.Name, len(def.Steps), MaxStepsPerSaga)
+		}
 		if def.SagaTimeoutSeconds != 0 && (def.SagaTimeoutSeconds < 1 || def.SagaTimeoutSeconds > 86400) {
 			return nil, fmt.Errorf("definition %q: saga_timeout_seconds must be in [1, 86400]", def.Name)
 		}

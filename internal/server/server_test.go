@@ -201,6 +201,19 @@ func validSteps() []*pb.StepDefinition {
 	}
 }
 
+// makeSteps returns n distinct step definitions for validation tests.
+func makeSteps(n int) []*pb.StepDefinition {
+	steps := make([]*pb.StepDefinition, n)
+	for i := range steps {
+		steps[i] = &pb.StepDefinition{
+			Name:          fmt.Sprintf("step-%d", i+1),
+			ForwardUrl:    "http://example.com/fwd",
+			CompensateUrl: "http://example.com/comp",
+		}
+	}
+	return steps
+}
+
 func TestServer(t *testing.T) {
 	t.Run("CreateSaga", func(t *testing.T) {
 		tests := []struct {
@@ -242,6 +255,11 @@ func TestServer(t *testing.T) {
 				req: &pb.CreateSagaRequest{Name: "saga", Steps: []*pb.StepDefinition{
 					{Name: "s1", ForwardUrl: "http://x.com"},
 				}},
+				wantCode: codes.InvalidArgument,
+			},
+			{
+				name:     "too many steps",
+				req:      &pb.CreateSagaRequest{Name: "saga", Steps: makeSteps(saga.MaxStepsPerSaga + 1)},
 				wantCode: codes.InvalidArgument,
 			},
 		}

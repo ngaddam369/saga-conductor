@@ -1998,3 +1998,119 @@ sagas:
 		t.Errorf("after start: want COMPLETED, got %v", started.Saga.Status)
 	}
 }
+
+func TestCreateSagaTooManySteps(t *testing.T) {
+	cfg := defaultTestConfig()
+	client := productionGRPCServer(t, cfg)
+
+	steps := make([]*pb.StepDefinition, saga.MaxStepsPerSaga+1)
+	for i := range steps {
+		steps[i] = &pb.StepDefinition{
+			Name:          fmt.Sprintf("step-%d", i+1),
+			ForwardUrl:    "http://example.com/fwd",
+			CompensateUrl: "http://example.com/comp",
+		}
+	}
+
+	_, err := client.CreateSaga(context.Background(), &pb.CreateSagaRequest{
+		Name:  "big-saga",
+		Steps: steps,
+	})
+	if code := status.Code(err); code != codes.InvalidArgument {
+		t.Errorf("want InvalidArgument, got %v (err=%v)", code, err)
+	}
+	if err != nil && !strings.Contains(err.Error(), "too many steps") {
+		t.Errorf("error should mention 'too many steps', got: %v", err)
+	}
+}
+
+func TestDrainErrorOnNon2xxEmitsWarnLog(t *testing.T) {
+	// Wire a zerolog buffer logger and an HTTP client whose transport returns
+	// a 500 with a body that errors on Read and Close.
+	var logBuf bytes.Buffer
+	logger := zerolog.New(&logBuf)
+
+	s, err := store.NewBoltStore(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("NewBoltStore: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	drainErr := fmt.Errorf("simulated drain error")
+	closeErr := fmt.Errorf("simulated close error")
+	rt := &integErrRoundTripper{statusCode: 500, readErr: drainErr, closeErr: closeErr}
+	httpClient := &http.Client{Transport: rt}
+
+	eng := engine.New(s,
+		engine.WithRetryBackoff(time.Millisecond),
+		engine.WithDefaultMaxRetries(0),
+		engine.WithLogger(logger),
+		engine.WithHTTPClient(httpClient),
+	)
+
+	grpcSrv := grpc.NewServer(grpc.MaxRecvMsgSize(20 * 1024 * 1024))
+	pb.RegisterSagaOrchestratorServer(grpcSrv, server.New(s, eng, 24*time.Hour))
+	lis, lisErr := net.Listen("tcp", "127.0.0.1:0")
+	if lisErr != nil {
+		t.Fatalf("listen: %v", lisErr)
+	}
+	go func() { _ = grpcSrv.Serve(lis) }()
+	t.Cleanup(grpcSrv.GracefulStop)
+
+	conn, connErr := grpc.NewClient(lis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if connErr != nil {
+		t.Fatalf("dial: %v", connErr)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	client := pb.NewSagaOrchestratorClient(conn)
+
+	ctx := context.Background()
+	srvURL := "http://127.0.0.1:1/unused" // intentionally unreachable — rt intercepts before connect
+	created, createErr := client.CreateSaga(ctx, &pb.CreateSagaRequest{
+		Name: "drain-warn-saga",
+		Steps: []*pb.StepDefinition{
+			{Name: "fail-step", ForwardUrl: srvURL, CompensateUrl: srvURL},
+		},
+	})
+	if createErr != nil {
+		t.Fatalf("CreateSaga: %v", createErr)
+	}
+
+	_, startErr := client.StartSaga(ctx, &pb.StartSagaRequest{SagaId: created.Saga.Id})
+	if startErr != nil {
+		t.Fatalf("StartSaga: %v", startErr)
+	}
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "engine: drain response body on error") {
+		t.Errorf("expected warn log for drain error; log:\n%s", logOutput)
+	}
+	if !strings.Contains(logOutput, "engine: close response body on error") {
+		t.Errorf("expected warn log for close error; log:\n%s", logOutput)
+	}
+}
+
+// integErrRoundTripper is an http.RoundTripper used in integration tests that
+// returns a response whose body errors on Read and Close.
+type integErrRoundTripper struct {
+	statusCode int
+	readErr    error
+	closeErr   error
+}
+
+func (rt *integErrRoundTripper) RoundTrip(_ *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: rt.statusCode,
+		Body:       &integErrBody{readErr: rt.readErr, closeErr: rt.closeErr},
+	}, nil
+}
+
+type integErrBody struct {
+	readErr  error
+	closeErr error
+}
+
+func (b *integErrBody) Read(_ []byte) (int, error) { return 0, b.readErr }
+func (b *integErrBody) Close() error               { return b.closeErr }

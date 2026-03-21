@@ -94,6 +94,11 @@ func WithLogger(l zerolog.Logger) Option {
 	}
 }
 
+// WithHTTPClient replaces the engine's outbound HTTP client. Intended for tests.
+func WithHTTPClient(c *http.Client) Option {
+	return func(e *Engine) { e.httpClient = c }
+}
+
 // Engine executes sagas stored in a Store.
 type Engine struct {
 	store              store.Store
@@ -984,8 +989,16 @@ func (e *Engine) callHTTP(ctx context.Context, url string, payload []byte, timeo
 		}
 		_, drainErr := io.Copy(io.Discard, resp.Body)
 		closeErr := resp.Body.Close()
-		_ = drainErr
-		_ = closeErr
+		if drainErr != nil {
+			e.log.Warn().Err(drainErr).Str("url", url).
+				Int("status_code", resp.StatusCode).
+				Msg("engine: drain response body on error")
+		}
+		if closeErr != nil {
+			e.log.Warn().Err(closeErr).Str("url", url).
+				Int("status_code", resp.StatusCode).
+				Msg("engine: close response body on error")
+		}
 		msg := fmt.Sprintf("step returned HTTP %d", resp.StatusCode)
 		span.SetStatus(otelcodes.Error, msg)
 		return &saga.StepError{

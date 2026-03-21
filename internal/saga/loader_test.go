@@ -1,8 +1,10 @@
 package saga_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ngaddam369/saga-conductor/internal/saga"
@@ -316,5 +318,27 @@ sagas:
 	_, err := saga.LoadDefinitions(path)
 	if err == nil {
 		t.Fatal("expected error for target_spiffe_id missing spiffe:// prefix, got nil")
+	}
+}
+
+func TestLoadDefinitionsTooManySteps(t *testing.T) {
+	t.Parallel()
+
+	// Build a YAML file with 101 steps (one over the limit).
+	header := "sagas:\n  - name: big-saga\n    steps:\n"
+	stepFmt := "      - name: step%d\n        forward_url: http://svc/do\n        compensate_url: http://svc/undo\n"
+	var sb strings.Builder
+	sb.WriteString(header)
+	for i := 1; i <= saga.MaxStepsPerSaga+1; i++ {
+		fmt.Fprintf(&sb, stepFmt, i)
+	}
+	path := writeYAML(t, sb.String())
+
+	_, err := saga.LoadDefinitions(path)
+	if err == nil {
+		t.Fatal("expected error for too many steps, got nil")
+	}
+	if !strings.Contains(err.Error(), "too many steps") {
+		t.Errorf("error should mention 'too many steps', got: %v", err)
 	}
 }

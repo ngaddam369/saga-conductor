@@ -2,7 +2,7 @@ BINARY   := saga-conductor
 MODULE   := github.com/ngaddam369/saga-conductor
 PROTO_DIR := proto/saga/v1
 
-.PHONY: build fmt lint test test-integration proto verify clean tidy
+.PHONY: build fmt lint test test-integration proto proto-check verify clean tidy
 
 ## build: compile the server binary
 build:
@@ -36,6 +36,11 @@ proto:
 		-I . \
 		-I $(HOME)/.local/include \
 		$(PROTO_DIR)/saga.proto
+
+## proto-check: regenerate proto and fail if generated files differ from committed
+proto-check:
+	$(MAKE) proto
+	git diff --exit-code proto/
 
 ## verify: run the full checklist (fmt → build → lint → mod verify → vulncheck → test)
 verify: fmt build lint test

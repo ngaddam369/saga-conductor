@@ -3,6 +3,10 @@ package saga
 
 import "time"
 
+// MaxStepsPerSaga is the maximum number of steps allowed in a single saga.
+// It bounds serialisation size and engine execution time.
+const MaxStepsPerSaga = 100
+
 // SagaStatus is the lifecycle state of a saga as a whole.
 type SagaStatus string
 

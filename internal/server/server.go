@@ -107,6 +107,10 @@ func (s *Server) CreateSaga(ctx context.Context, req *pb.CreateSagaRequest) (*pb
 		// validation and mapping logic below runs unchanged.
 		req = cloneWithTemplateSteps(req, tmpl)
 	}
+	if len(req.Steps) > saga.MaxStepsPerSaga {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"too many steps (%d); maximum is %d", len(req.Steps), saga.MaxStepsPerSaga)
+	}
 	if len(req.Payload) > 10*1024*1024 {
 		return nil, status.Error(codes.InvalidArgument, "payload exceeds 10 MB")
 	}

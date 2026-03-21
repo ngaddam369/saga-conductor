@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -76,6 +77,16 @@ func LoadDefinitions(path string) ([]SagaDefinition, error) {
 			}
 			if step.RetryBackoffMs < 0 || step.RetryBackoffMs > 60000 {
 				return nil, fmt.Errorf("definition %q step %q: retry_backoff_ms must be in [0, 60000]", def.Name, step.Name)
+			}
+			validAuthTypes := map[string]bool{
+				"none": true, "static": true, "jwt": true,
+				"oidc": true, "svid-exchange": true,
+			}
+			if step.AuthType != "" && !validAuthTypes[step.AuthType] {
+				return nil, fmt.Errorf("definition %q step %q: unknown auth_type %q", def.Name, step.Name, step.AuthType)
+			}
+			if step.TargetSPIFFEID != "" && !strings.HasPrefix(step.TargetSPIFFEID, "spiffe://") {
+				return nil, fmt.Errorf("definition %q step %q: target_spiffe_id must start with spiffe://", def.Name, step.Name)
 			}
 		}
 	}

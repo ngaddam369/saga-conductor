@@ -108,6 +108,8 @@ The loader validates definitions at startup:
 - Each step's `timeout_seconds`, if set, must be in [1, 3600].
 - Each step's `max_retries` must be in [0, 100].
 - Each step's `retry_backoff_ms` must be in [0, 60000].
+- Each step's `auth_type`, if set, must be one of: `none`, `static`, `jwt`, `oidc`, `svid-exchange`.
+- Each step's `target_spiffe_id`, if set, must start with `spiffe://`.
 
 Invalid definitions cause the server to exit on startup with a descriptive error message.
 

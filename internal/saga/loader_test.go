@@ -284,3 +284,37 @@ sagas:
 		t.Fatal("expected error for retry_backoff_ms out of range, got nil")
 	}
 }
+
+func TestLoadDefinitionsValidationStepAuthTypeInvalid(t *testing.T) {
+	t.Parallel()
+	path := writeYAML(t, `
+sagas:
+  - name: bad-saga
+    steps:
+      - name: step1
+        forward_url: http://svc/do
+        compensate_url: http://svc/undo
+        auth_type: foobar
+`)
+	_, err := saga.LoadDefinitions(path)
+	if err == nil {
+		t.Fatal("expected error for unknown auth_type, got nil")
+	}
+}
+
+func TestLoadDefinitionsValidationStepTargetSPIFFEIDInvalid(t *testing.T) {
+	t.Parallel()
+	path := writeYAML(t, `
+sagas:
+  - name: bad-saga
+    steps:
+      - name: step1
+        forward_url: http://svc/do
+        compensate_url: http://svc/undo
+        target_spiffe_id: "not-a-spiffe-id"
+`)
+	_, err := saga.LoadDefinitions(path)
+	if err == nil {
+		t.Fatal("expected error for target_spiffe_id missing spiffe:// prefix, got nil")
+	}
+}

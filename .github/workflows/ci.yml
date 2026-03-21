@@ -113,12 +113,13 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: Install protoc and well-known-type includes
+      - name: Install protoc v28.3 and well-known-type includes
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q protobuf-compiler
-          mkdir -p ~/.local/include
-          cp -r /usr/include/google ~/.local/include/google
+          PROTOC_VERSION=28.3
+          curl -sSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip" -o protoc.zip
+          unzip -q protoc.zip -d ~/.local
+          rm protoc.zip
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Install Go proto plugins
         run: |
           go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
